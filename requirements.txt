@@ -4,3 +4,4 @@ scikit-learn>=1.4,<2
 lightgbm>=4,<5
 pytest>=8,<10
 pyyaml>=6,<7
+yfinance>=0.2.54,<1

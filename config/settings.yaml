@@ -1,13 +1,14 @@
 market: NSE
-universe: NIFTY200
+universe: user_supplied_fixed_universe
 frequency: 1d
 horizon_days: 5
 training:
-  train_end: "2022-12-31"
-  validation_end: "2024-12-31"
+  min_train_sessions: 252
+  test_sessions: 63
   seed: 42
 portfolio:
   top_k: 10
   max_weight: 0.10
+  cost_bps_per_side: 10
 execution:
   enabled: false

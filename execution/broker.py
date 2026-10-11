@@ -12,7 +12,9 @@ class PaperBroker:
         self.orders = []
 
     def place_order(self, order: Order):
-        if order.quantity <= 0 or order.side not in {"BUY", "SELL"}:
+        if (not isinstance(order.quantity, int) or isinstance(order.quantity, bool)
+                or order.quantity <= 0 or not order.symbol.strip()
+                or order.side not in {"BUY", "SELL"}):
             raise ValueError("Invalid order")
         self.orders.append(order)
         return {"status": "PAPER_ONLY", "order_number": len(self.orders)}
