@@ -1,0 +1,85 @@
+{
+  "source": "NSE security-wise daily bhavcopy",
+  "archive_url_template": "https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_{day}.csv",
+  "constituents_source": "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv",
+  "snapshot_retrieved_utc": "2026-10-11T10:02:19.381739+00:00",
+  "start_inclusive": "2019-10-11",
+  "end_exclusive": "2026-10-11",
+  "frequency": "daily",
+  "series_filter": [
+    "EQ",
+    "BE",
+    "BZ",
+    "SM",
+    "ST",
+    "RR"
+  ],
+  "columns": [
+    "date",
+    "symbol",
+    "open",
+    "close",
+    "volume"
+  ],
+  "currency": "INR",
+  "volume_definition": "TTL_TRD_QNTY (total traded shares/units for the session)",
+  "price_adjustment": "As-published NSE open/close; not adjusted for corporate actions",
+  "universe": "Current constituent snapshot, not historical point-in-time membership",
+  "constituents": 501,
+  "symbols_with_data": 500,
+  "available_sessions": 1737,
+  "rows": 706975,
+  "first_date": "2019-10-11",
+  "last_date": "2026-10-09",
+  "archive_not_found_dates": 378,
+  "archive_date_mismatch_dates": 442,
+  "download_errors": 0,
+  "download_status": "complete_requests",
+  "notes": [
+    "404 dates are unavailable archives, not independently verified holidays.",
+    "Short coverage may reflect IPOs, symbol changes, suspensions, or unavailable archives; no rows are fabricated.",
+    "Raw open/close/volume dataset cannot be passed to the existing OHLCV feature loader; ATR requires high/low."
+  ],
+  "files": [
+    {
+      "path": "daily_2019.csv.gz",
+      "rows": 18091,
+      "sha256": "aa0ac119db5a6ed08ce10eac666ccef1ea9b168a29eeb37de0694ff328f32ddb"
+    },
+    {
+      "path": "daily_2020.csv.gz",
+      "rows": 84464,
+      "sha256": "906d53ae548544c320479356a40e82fc14c6ef9bbef78a7dcec54ca6f5c7f694"
+    },
+    {
+      "path": "daily_2021.csv.gz",
+      "rows": 88460,
+      "sha256": "64b3c75a5398922378461c1c3c772b3d0a435d4e02cc00b9b158fefaaea4a810"
+    },
+    {
+      "path": "daily_2022.csv.gz",
+      "rows": 96075,
+      "sha256": "ab735e3d84ea651499018bad3363e79a76cd5201cf7ceb5cbca54928af6af5de"
+    },
+    {
+      "path": "daily_2023.csv.gz",
+      "rows": 100355,
+      "sha256": "e3544c0aacb6a3b325f13a37db144aa71ebddaaa56bf643ec7f3ceb8dfa7f579"
+    },
+    {
+      "path": "daily_2024.csv.gz",
+      "rows": 108343,
+      "sha256": "9996d928c5d222a336dc16f1dcf7fd95eb7c1709dc4a3858b54e6e8ba853e676"
+    },
+    {
+      "path": "daily_2025.csv.gz",
+      "rows": 116571,
+      "sha256": "6a604982de44ab7c0408b39c015d213de3deefd53251cf574ea8e234c97b94fa"
+    },
+    {
+      "path": "daily_2026.csv.gz",
+      "rows": 94616,
+      "sha256": "b2ec3be6494038df5f8d4c3311c2d5161dccb8401660ac4ea22817235dee655b"
+    }
+  ]
+}

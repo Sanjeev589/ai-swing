@@ -67,3 +67,17 @@ A current hand-picked universe introduces survivorship bias. Retrospectively adj
 - [yfinance download API](https://ranaroussi.github.io/yfinance/reference/api/yfinance.download.html)
 - [LightGBM LGBMRanker](https://lightgbm.readthedocs.io/en/latest/pythonapi/lightgbm.LGBMRanker.html)
 - [NSE historical reports](https://www.nseindia.com/static/resources/historical-reports-capital-market-daily-monthly-archives)
+
+## Seven-year Nifty 500 daily dataset
+
+`data/nifty500/` contains an official constituent snapshot, NSE end-of-day data, an archive-date audit, and per-stock coverage. Daily records are stored in compressed yearly CSVs (`daily_YYYY.csv.gz`), which pandas reads directly: `pd.read_csv("data/nifty500/daily_2025.csv.gz")`. Only `date,symbol,open,close,volume` are retained. No minute or hourly data is collected.
+
+```powershell
+python -m data.nifty500_daily --start 2019-10-11 --end 2026-10-11 --output data/nifty500
+```
+
+End is exclusive. All calendar dates are checked, including possible special weekend sessions. The downloader resumes from git-ignored session caches. A request error prevents final dataset creation; HTTP 404s and archives containing another session date are recorded separately in `archive_status.csv`. These dates are not automatically declared holidays. Ordinary equity series (`EQ`, `BE`, `BZ`, `SM`, `ST`) and constituent REIT series (`RR`) are retained; changes to historical symbols or trading series are reflected as coverage gaps. Prices are as published by NSE (INR), without corporate-action adjustment; volume is total traded shares/units (`TTL_TRD_QNTY`).
+
+The snapshot is the current Nifty 500 list, not its historical membership. New listings and symbol changes cause shorter coverage. `coverage.csv` records first/last dates, row counts, and missing observations relative to available archive sessions. Data is never backfilled or fabricated.
+
+This open/close/volume dataset does not satisfy the existing OHLCV loader: high and low are required by ATR. Use it for open/close/volume analysis; corporate-action processing and a compatible feature set are needed before model training.

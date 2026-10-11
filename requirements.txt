@@ -5,3 +5,5 @@ lightgbm>=4,<5
 pytest>=8,<10
 pyyaml>=6,<7
 yfinance>=0.2.54,<1
+requests>=2.31,<3
+openpyxl>=3.1,<4
