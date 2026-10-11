@@ -1,0 +1,49 @@
+{
+  "stock_source": "https://nsearchives.nseindia.com/content/historical/EQUITIES/{year}/{month}/cm{day}bhav.csv.zip",
+  "index_source": "https://nsearchives.nseindia.com/content/indices/ind_close_all_{day}.csv",
+  "constituents": "data/nifty500/constituents.csv",
+  "start_inclusive": "2017-12-01",
+  "end_exclusive": "2023-01-01",
+  "rows": 430490,
+  "sessions": 1259,
+  "price_adjustment": "None; as-published NSE prices",
+  "index_type": "Nifty 500 price index, not total return index",
+  "files": [
+    {
+      "path": "ohlcv_2017.csv.gz",
+      "rows": 5981,
+      "sha256": "3af8485c9e7a2b129b7e9dbdb4d1776fe76782e3494161cc085513b88641ba1e"
+    },
+    {
+      "path": "ohlcv_2018.csv.gz",
+      "rows": 75761,
+      "sha256": "ad09ee75d8437b64a9cf73d645571e772654d11fa86264ac93ed1a940e4b97bd"
+    },
+    {
+      "path": "ohlcv_2019.csv.gz",
+      "rows": 79369,
+      "sha256": "d204da798bf6f820609770640428ca6cdf7d4888c12b27da225c7b032734e67f"
+    },
+    {
+      "path": "ohlcv_2020.csv.gz",
+      "rows": 84472,
+      "sha256": "485e19adc27fab404e7c383508b2d9f8b899794033be3d8845101af44501d9bc"
+    },
+    {
+      "path": "ohlcv_2021.csv.gz",
+      "rows": 88827,
+      "sha256": "b31a8e89e0c21095175583a37a3abe4631315706e2903164f510836a1ecc35fc"
+    },
+    {
+      "path": "ohlcv_2022.csv.gz",
+      "rows": 96080,
+      "sha256": "bee8330584c9845cf06b1fde0f9b4d2a834c087eb6097de469c2d93cb3ac1d52"
+    },
+    {
+      "path": "nifty500_index.csv",
+      "rows": 1259,
+      "sha256": "d98aa59f507a0b395cd0f09ac3d0079556eb04f0ea29577b0637f37e7c89ed3f"
+    }
+  ],
+  "retrieved_utc": "2026-10-11T10:31:50.774668+00:00"
+}

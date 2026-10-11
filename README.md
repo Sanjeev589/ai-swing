@@ -81,3 +81,7 @@ End is exclusive. All calendar dates are checked, including possible special wee
 The snapshot is the current Nifty 500 list, not its historical membership. New listings and symbol changes cause shorter coverage. `coverage.csv` records first/last dates, row counts, and missing observations relative to available archive sessions. Data is never backfilled or fabricated.
 
 This open/close/volume dataset does not satisfy the existing OHLCV loader: high and low are required by ATR. Use it for open/close/volume analysis; corporate-action processing and a compatible feature set are needed before model training.
+
+## Requested 2019–2022 swing features
+
+[features/README.md](features/README.md) documents the ten indicator families and separate yearly files in `features/derived/`. Daily supporting OHLCV and the official Nifty 500 price-index closes are in `data/feature_inputs/`; December 2017 onward provides pre-2019 warm-up. Run `python -m features.generate_features` to regenerate offline. These files use unadjusted official prices and contain indicators only; the existing ranking/backtest feature selection is unchanged. Review corporate actions and historical universe membership before training on this dataset.
