@@ -85,3 +85,7 @@ This open/close/volume dataset does not satisfy the existing OHLCV loader: high 
 ## Requested 2019–2022 swing features
 
 [features/README.md](features/README.md) documents the ten indicator families and separate yearly files in `features/derived/`. Daily supporting OHLCV and the official Nifty 500 price-index closes are in `data/feature_inputs/`; December 2017 onward provides pre-2019 warm-up. Run `python -m features.generate_features` to regenerate offline. These files use unadjusted official prices and contain indicators only; the existing ranking/backtest feature selection is unchanged. Review corporate actions and historical universe membership before training on this dataset.
+
+## Trained model from the ten swing indicator families
+
+[models/README.md](models/README.md) documents the saved LightGBM LambdaRank model in `models/trained/swing_ranker/`. Run `python -m models.train_swing_ranker` to train offline from the four saved feature files. The model selects tree count using 2021 validation, refits on 2019–2021, and holds out 2022. Saved artifacts include the native model, predictions, metrics, feature importance, input hashes, and training settings. The reported held-out results are weak and below the relative-strength baseline; this remains a research model with live trading disabled.

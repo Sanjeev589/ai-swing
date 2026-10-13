@@ -1,0 +1,159 @@
+{
+  "model": "LightGBM LambdaRank",
+  "features": [
+    "ema_9_distance",
+    "ema_21_distance",
+    "ema_50_distance",
+    "rsi_14",
+    "macd_fraction",
+    "macd_signal_fraction",
+    "macd_histogram_fraction",
+    "volume_ratio_20",
+    "adx_14",
+    "plus_di_14",
+    "minus_di_14",
+    "bb_position",
+    "bb_width",
+    "atr_14_fraction",
+    "supertrend_distance",
+    "supertrend_direction",
+    "relative_strength_20",
+    "relative_strength_60",
+    "high_252_proximity"
+  ],
+  "horizon_open_to_open_sessions": 5,
+  "split_boundaries": {
+    "train_end": "2020-12-31",
+    "validation_end": "2021-12-31",
+    "test_end": "2022-12-31"
+  },
+  "selection_train": {
+    "rows": 154516,
+    "sessions": 491,
+    "first_signal": "2019-01-01",
+    "last_signal": "2020-12-22",
+    "latest_label_end": "2020-12-31"
+  },
+  "validation": {
+    "rows": 80960,
+    "sessions": 242,
+    "first_signal": "2021-01-01",
+    "last_signal": "2021-12-23",
+    "latest_label_end": "2021-12-31"
+  },
+  "final_training": {
+    "rows": 235476,
+    "sessions": 733,
+    "first_signal": "2019-01-01",
+    "last_signal": "2021-12-23",
+    "latest_label_end": "2021-12-31"
+  },
+  "test": {
+    "rows": 88578,
+    "sessions": 248,
+    "first_signal": "2022-01-03",
+    "last_signal": "2022-12-30",
+    "latest_label_end": "2022-12-30"
+  },
+  "best_iteration": 81,
+  "validation_metrics": {
+    "signal_sessions": 242,
+    "evaluated_sessions": 242,
+    "prediction_rows": 80960,
+    "labelled_rows": 80960,
+    "mean_daily_rank_ic": 0.006207696685996894,
+    "mean_daily_ndcg_at_10": 0.5144915501552929,
+    "complete_top_10_sessions": 242,
+    "mean_top_10_gross_return": 0.010769873604816942,
+    "mean_universe_gross_return_same_sessions": 0.00855411408032045,
+    "mean_top_10_excess_return": 0.002215759524496493,
+    "label_abs_return_over_50pct": 88
+  },
+  "test_metrics": {
+    "signal_sessions": 248,
+    "evaluated_sessions": 242,
+    "prediction_rows": 88578,
+    "labelled_rows": 86325,
+    "mean_daily_rank_ic": 0.016779764882725156,
+    "mean_daily_ndcg_at_10": 0.49553873774034135,
+    "complete_top_10_sessions": 242,
+    "mean_top_10_gross_return": 0.0009420636212522805,
+    "mean_universe_gross_return_same_sessions": 0.0013994012667704811,
+    "mean_top_10_excess_return": -0.00045733764551819997,
+    "label_abs_return_over_50pct": 71
+  },
+  "relative_strength_20_baseline": {
+    "signal_sessions": 248,
+    "evaluated_sessions": 242,
+    "prediction_rows": 88578,
+    "labelled_rows": 86325,
+    "mean_daily_rank_ic": -0.02273573227770676,
+    "mean_daily_ndcg_at_10": 0.5017297358446535,
+    "complete_top_10_sessions": 242,
+    "mean_top_10_gross_return": 0.006623787705259253,
+    "mean_universe_gross_return_same_sessions": 0.0013994012667704811,
+    "mean_top_10_excess_return": 0.005224386438488775,
+    "label_abs_return_over_50pct": 71
+  },
+  "parameters": {
+    "boosting_type": "gbdt",
+    "class_weight": null,
+    "colsample_bytree": 1.0,
+    "importance_type": "split",
+    "learning_rate": 0.03,
+    "max_depth": -1,
+    "min_child_samples": 100,
+    "min_child_weight": 0.001,
+    "min_split_gain": 0.0,
+    "n_estimators": 81,
+    "n_jobs": 2,
+    "num_leaves": 15,
+    "objective": "lambdarank",
+    "random_state": 42,
+    "reg_alpha": 0.0,
+    "reg_lambda": 1.0,
+    "subsample": 1.0,
+    "subsample_for_bin": 200000,
+    "subsample_freq": 0,
+    "label_gain": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "verbosity": -1,
+    "deterministic": true,
+    "force_col_wise": true,
+    "lambdarank_truncation_level": 20
+  },
+  "versions": {
+    "python": "3.12.14",
+    "lightgbm": "4.7.0",
+    "pandas": "2.2.3",
+    "numpy": "2.3.5"
+  },
+  "inputs_sha256": {
+    "features/derived/features_2019.csv.xz": "b13f8936feee7d87ccc37511b5f9b6de007df4c6eb9bf29621d6690d89a9939a",
+    "features/derived/features_2020.csv.xz": "23b71c2fea3b7e34eec64eee4f5c89e4a7d3ac946b7f7b507f3f7765642afc01",
+    "features/derived/features_2021.csv.xz": "2eef287dcaf002de847f90e369a9fd5599e7f027b4661ace8a410cdb232b92be",
+    "features/derived/features_2022.csv.xz": "278d74a0a9c019d4ae1aa7e6cee6266f6aa9c77d5b1a5b1aecb42d51281ab2c5",
+    "data/feature_inputs/ohlcv_2017.csv.gz": "3af8485c9e7a2b129b7e9dbdb4d1776fe76782e3494161cc085513b88641ba1e",
+    "data/feature_inputs/ohlcv_2018.csv.gz": "ad09ee75d8437b64a9cf73d645571e772654d11fa86264ac93ed1a940e4b97bd",
+    "data/feature_inputs/ohlcv_2019.csv.gz": "d204da798bf6f820609770640428ca6cdf7d4888c12b27da225c7b032734e67f",
+    "data/feature_inputs/ohlcv_2020.csv.gz": "485e19adc27fab404e7c383508b2d9f8b899794033be3d8845101af44501d9bc",
+    "data/feature_inputs/ohlcv_2021.csv.gz": "b31a8e89e0c21095175583a37a3abe4631315706e2903164f510836a1ecc35fc",
+    "data/feature_inputs/ohlcv_2022.csv.gz": "bee8330584c9845cf06b1fde0f9b4d2a834c087eb6097de469c2d93cb3ac1d52",
+    "data/feature_inputs/nifty500_index.csv": "d98aa59f507a0b395cd0f09ac3d0079556eb04f0ea29577b0637f37e7c89ed3f"
+  },
+  "model_sha256": "390dd1187aa0475e54e47334a9b23ace698b56b151b2c7b44fab8b101b8ce820",
+  "live_trading_enabled": false,
+  "limitations": [
+    "Unadjusted prices: corporate actions can create misleading features and labels.",
+    "Current constituent snapshot: historical membership and delistings are not reconstructed.",
+    "Ranking scores are not returns or probabilities.",
+    "Metrics use overlapping five-session gross outcomes; no fees, portfolio CAGR, or live-performance claim.",
+    "NDCG and IC use available outcome rows; top-10 mean requires all ten outcomes observed.",
+    "2021 selects tree count; final model trains only on selected 2019\u20132021 rows; 2022 is held out."
+  ]
+}
