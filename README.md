@@ -89,3 +89,7 @@ This open/close/volume dataset does not satisfy the existing OHLCV loader: high 
 ## Trained model from the ten swing indicator families
 
 [models/README.md](models/README.md) documents the saved LightGBM LambdaRank model in `models/trained/swing_ranker/`. Run `python -m models.train_swing_ranker` to train offline from the four saved feature files. The model selects tree count using 2021 validation, refits on 2019–2021, and holds out 2022. Saved artifacts include the native model, predictions, metrics, feature importance, input hashes, and training settings. The reported held-out results are weak and below the relative-strength baseline; this remains a research model with live trading disabled.
+
+## Experimental regime-filtered AI swing trading (paper-only)
+
+See [the AI swing research runner](backtesting/AI_SWING_README.md) for Nifty 500 market-regime screening, breakout/pullback entries, purged walk-forward LightGBM vs a non-AI ranking comparator, and capital/stop-loss management. Existing OHLCV history ends in 2022 and is unadjusted; do not treat the outputs as live or validated performance.

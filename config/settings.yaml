@@ -10,5 +10,16 @@ portfolio:
   top_k: 10
   max_weight: 0.10
   cost_bps_per_side: 10
+# Separate paper-only market-regime and AI-vs-rule swing research runner.
+# These values are documented defaults; the CLI sets actual evaluation thresholds.
+ai_swing_research:
+  min_breadth_fraction: 0.45
+  min_turnover_inr: 50000000
+  risk_per_trade: 0.005
+  max_gross_exposure: 0.75
+  atr_stop_multiplier: 2.0
+  max_hold_sessions: 15
+  cost_bps_per_side: 25
+  price_policy: explicit_cli_required
 execution:
   enabled: false
