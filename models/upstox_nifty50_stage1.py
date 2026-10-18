@@ -84,6 +84,27 @@ def _paper_cohorts(predictions: pd.DataFrame, *, rank_by: str, sessions: pd.Date
     return trades, out
 
 
+
+def verify_download_audits(root: Path, snapshot: str) -> list[dict]:
+    """Fail closed unless every requested stock/year was checked without HTTP errors."""
+    audits=[]
+    for start,end,years in ((TRAIN_BEGIN,TRAIN_END,17),(VALID_BEGIN,VALID_END,3)):
+        filename = f'nifty50_{snapshot}_{start}_{end}_summary.json'
+        path = root/'reports'/'upstox_v3'/filename
+        if not path.exists():
+            raise ValueError(f'Missing Upstox download audit: {path}; finish both downloads first')
+        report=json.loads(path.read_text())
+        expected=50*years
+        if (report.get('universe_size') != 50 or
+            report.get('requests_or_cache_checks') != expected or
+            report.get('errors') != 0 or
+            report.get('snapshot') != snapshot or
+            report.get('start') != start or report.get('end') != end):
+            raise ValueError(f'Incomplete/failed Upstox download audit: {path}')
+        audits.append(report)
+    return audits
+
+
 def train_and_validate(*, root, snapshot: str, output: str = 'artifacts/upstox_nifty50_stage1',
                        horizon: int = 5, top_k: int = 5, estimators: int = 100,
                        cost_bps_per_side: float = 25., allow_unverified_corporate_actions: bool = False):
@@ -93,6 +114,7 @@ def train_and_validate(*, root, snapshot: str, output: str = 'artifacts/upstox_n
     if not allow_unverified_corporate_actions:
         raise ValueError('Upstox price adjustment is unverified; pass --allow-unverified-corporate-actions for exploratory research only')
     root = data_root(root)
+    audits = verify_download_audits(root, snapshot)
     constituents = load_universe(root, snapshot)
     raw = load_daily(root, constituents, TRAIN_BEGIN, VALID_END)
     frame = _eligible_features(raw, horizon)
@@ -139,6 +161,9 @@ def train_and_validate(*, root, snapshot: str, output: str = 'artifacts/upstox_n
                'horizon_sessions':horizon,'top_k':top_k, 'features':list(feature_names),
                'estimators':estimators,'results':results,'future_test_2020_onwards_untouched':True,
                'prices_corporate_actions':'UNVERIFIED - RESEARCH ONLY',
+               'validated_download_audits':[{'start':a['start'],'end':a['end'],
+                    'request_checks':a['requests_or_cache_checks'],'errors':a['errors'],
+                    'no_data':a.get('no_data',0)} for a in audits],
                'data_license':'Verify broker permissions for reuse across projects',
                'limitations':['Current Nifty 50 contains survivorship bias in older years.',
                               'Not all present Nifty 50 stocks traded in 2000.',

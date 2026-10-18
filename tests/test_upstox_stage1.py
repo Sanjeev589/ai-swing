@@ -117,6 +117,11 @@ def test_full_model_fixed_holdout_on_synthetic_series(tmp_path):
     symbols=[f'S{i:02d}' for i in range(50)]
     instruments=[f'INE{i:09d}' for i in range(50)]
     pd.DataFrame({'symbol':symbols,'isin':instruments,'instrument_key':[f'NSE_EQ|{x}' for x in instruments]}).to_csv(directory/f'{snapshot}.csv',index=False)
+    audits=root/'reports'/'upstox_v3'; audits.mkdir(parents=True)
+    for begin,end,count in [('2000-01-01','2016-12-31',850),('2017-01-01','2019-12-31',150)]:
+        (audits/f'nifty50_{snapshot}_{begin}_{end}_summary.json').write_text(json.dumps({
+            'start':begin,'end':end,'snapshot':snapshot,'universe_size':50,
+            'requests_or_cache_checks':count,'errors':0,'no_data':count//2}))
     # Only 3 of today's 50 trade in this synthetic history. Real data may have IPO gaps.
     dates=pd.bdate_range('2014-01-01','2019-12-31')
     for i in range(3):
