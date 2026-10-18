@@ -7,6 +7,7 @@ failed and cached years. Requires an external shared-data directory.
 from __future__ import annotations
 
 import argparse
+import csv
 from datetime import date, datetime
 import hashlib
 import io
@@ -24,6 +25,41 @@ NIFTY50_CSV = 'https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv
 NIFTY500_CSV = 'https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv'
 UNIVERSE_URLS = {'nifty50': NIFTY50_CSV, 'nifty500': NIFTY500_CSV}
 PROVIDER = 'yahoo_finance'
+
+# Append-only: earlier failures remain visible after a successful retry.
+ERROR_COLUMNS = (
+    'logged_at_utc', 'universe_name', 'snapshot', 'company_name', 'symbol',
+    'isin', 'ticker', 'year', 'from_date', 'to_date', 'status', 'error_type',
+    'error_message',
+)
+
+
+def _append_download_issue(path: Path, record: dict) -> None:
+    """Durably append an unsuccessful stock-year attempt, including its date range.
+
+    Separate from the per-run status CSV, which is intentionally replaced on reruns.
+    Store neither credentials nor HTTP authorization headers in this file.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    needs_header = not path.exists() or path.stat().st_size == 0
+    with path.open('a', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(handle, fieldnames=ERROR_COLUMNS, extrasaction='ignore')
+        if needs_header:
+            writer.writeheader()
+        writer.writerow(record)
+        handle.flush()
+
+
+def _company_names(csv_text: str) -> dict[str, str]:
+    """Use official company names for diagnostics without changing frozen snapshots."""
+    frame = pd.read_csv(io.StringIO(csv_text), dtype=str).fillna('')
+    keys = {str(k).strip().casefold().replace(' ', ''): k for k in frame.columns}
+    symbol_col = keys.get('symbol')
+    name_col = keys.get('companyname') or keys.get('name')
+    if symbol_col is None or name_col is None:
+        return {}
+    return dict(zip(frame[symbol_col].str.strip().str.upper(), frame[name_col].str.strip()))
+
 
 
 def parse_constituents(csv_text: str, *, overrides: dict[str,str] | None = None,
@@ -146,7 +182,7 @@ def _atomic_json(path: Path, obj: dict):
 
 def collect(*, root=None, start='2000-01-01', end='2016-12-31',
             asof=None, universe_csv=None, overrides_csv=None, downloader=None,
-            session=None, pause=0.8, refresh=False, universe_name='nifty50'):
+            session=None, pause=0.8, refresh=False, universe_name='nifty50', only_symbols=None):
     """Download complete calendar years, inclusive end date; never mask failures as no-data."""
     begin, finish = date.fromisoformat(start), date.fromisoformat(end)
     if begin > finish or begin.month!=1 or begin.day!=1 or finish.month!=12 or finish.day!=31:
@@ -175,42 +211,70 @@ def collect(*, root=None, start='2000-01-01', end='2016-12-31',
     universe=parse_constituents(csv_text,overrides=overrides,
                                 expected_count=50 if universe_name=='nifty50' else None)
     freeze_snapshot(root,asof=asof,constituents=universe,source=origin,universe_name=universe_name)
+    company_names = _company_names(csv_text)
+    # Optional diagnostic subset never replaces a full-universe audit report.
+    chosen = None
+    if only_symbols:
+        chosen = {str(x).strip().upper() for x in only_symbols}
+        if not chosen or chosen - set(universe.symbol):
+            raise ValueError(f'Unknown --only-symbols: {sorted(chosen - set(universe.symbol))}')
+        selected = universe[universe.symbol.isin(chosen)]
+    else:
+        selected = universe
+    folder = root/'reports'/PROVIDER
+    folder.mkdir(parents=True, exist_ok=True)
+    error_log = folder/f'{universe_name}_download_errors.csv'
     if downloader is None:
         import yfinance as yf
         downloader=yf.download
     status=[]
-    for item in universe.itertuples(index=False):
+    for item in selected.itertuples(index=False):
         for year in range(begin.year,finish.year+1):
             dest=bar_path(root,item.isin,year,PROVIDER)
-            outcome={'symbol':item.symbol,'isin':item.isin,'ticker':item.yahoo_ticker,
-                     'year':year,'status':None,'rows':0,'error':''}
+            year_start=f'{year}-01-01'
+            year_end=f'{year}-12-31'
+            outcome={'symbol':item.symbol,'company_name':company_names.get(item.symbol,item.symbol),
+                     'isin':item.isin,'ticker':item.yahoo_ticker,
+                     'year':year,'from_date':year_start,'to_date':year_end,
+                     'status':None,'rows':0,'error':''}
+            error_type=''
             try:
                 if dest.is_file() and not refresh:
+                    # A valid completed stock/year is ALWAYS skipped on subsequent runs.
                     bars=validate_bars(pd.read_csv(dest,dtype={'isin':str}))
                     if bars.symbol.iloc[0]!=item.symbol or bars['isin'].iloc[0]!=item.isin or not bars.date.dt.year.eq(year).all():
                         raise ValueError('Existing cache identity/year mismatch')
                     outcome.update(status='cached',rows=len(bars))
                 else:
-                    start_date=f'{year}-01-01';end_date=f'{year+1}-01-01'
-                    raw=_download_ticker(item.yahoo_ticker,start_date,end_date,downloader,pause=pause)
+                    raw=_download_ticker(item.yahoo_ticker,year_start,f'{year+1}-01-01',downloader,pause=pause)
                     bars=normalize_yahoo(raw,symbol=item.symbol,isin=item.isin,year=year)
                     if bars is None:
-                        # Empty can be pre-listing OR provider blocking; keep it distinct and auditable.
-                        outcome['status']='no_data_unverified'
+                        # Empty data are NOT assumed pre-listing; retry on next run.
+                        outcome.update(status='no_data_unverified',
+                                       error='Yahoo returned no bars (pre-listing, symbol change, throttling or outage)')
+                        error_type='NoDataUnverified'
                     else:
                         save_year(root,bars,isin=item.isin,year=year,provider=PROVIDER,replace=refresh)
                         outcome.update(status='downloaded',rows=len(bars))
                     if pause: time.sleep(pause)
             except Exception as exc:
-                outcome.update(status='error',error=f'{type(exc).__name__}: {str(exc)[:220]}')
+                error_type=type(exc).__name__
+                outcome.update(status='error',error=f'{error_type}: {str(exc)[:220]}')
+            if outcome['status'] in ('error','no_data_unverified'):
+                _append_download_issue(error_log,{
+                    'logged_at_utc':datetime.now(ZoneInfo('UTC')).isoformat(),
+                    'universe_name':universe_name,'snapshot':asof,
+                    **outcome,'error_type':error_type,'error_message':outcome['error']})
+                print(f"{outcome['status'].upper()} {item.symbol} {year_start}..{year_end}: {outcome['error']}",flush=True)
             status.append(outcome)
-    folder=root/'reports'/PROVIDER
     stem=f'{universe_name}_{asof}_{start}_{end}'
-    folder.mkdir(parents=True,exist_ok=True)
+    if chosen is not None:
+        stem += '_subset_' + hashlib.sha256(','.join(sorted(chosen)).encode()).hexdigest()[:10]
     pd.DataFrame(status).to_csv(folder/f'{stem}_status.csv',index=False)
     counts=pd.Series([r['status'] for r in status]).value_counts().to_dict()
     report={'provider':PROVIDER,'universe_name':universe_name,'start':start,'end':end,'snapshot':asof,
-            'universe_size':len(universe),'requests_or_cache_checks':len(status),
+            'universe_size':len(universe),'selected_symbols':len(selected),
+            'partial_universe':chosen is not None, 'requests_or_cache_checks':len(status),
             'downloaded':int(counts.get('downloaded',0)),
             'cached':int(counts.get('cached',0)),
             'no_data_unverified':int(counts.get('no_data_unverified',0)),
@@ -219,6 +283,8 @@ def collect(*, root=None, start='2000-01-01', end='2016-12-31',
             'adjustment_policy':'provider-adjusted OHLC; split/bonus/dividend effects require independent review',
             'historical_membership':f'current {universe_name} snapshot, NOT historic constituents',
             'status_csv':str(folder/f'{stem}_status.csv'),
+            'persistent_error_csv':str(error_log),
+            'cached_stock_years_not_redownloaded':int(counts.get('cached',0)),
             'live_trading_enabled':False}
     _atomic_json(folder/f'{stem}_summary.json',report)
     return report
@@ -234,12 +300,13 @@ def main():
     p.add_argument('--universe-csv',help='Offline copy of NSE Nifty50 member CSV')
     p.add_argument('--overrides-csv',help='Optional symbol,yahoo_ticker mapping CSV')
     p.add_argument('--pause-seconds',type=float,default=.8)
+    p.add_argument('--only-symbols',nargs='+',help='Diagnose a subset (e.g. RELIANCE TCS) while keeping full Nifty50 snapshot')
     p.add_argument('--refresh',action='store_true',help='Explicitly redownload and replace existing full-year partitions')
     args=p.parse_args()
     report=collect(root=args.data_root,start=args.from_date,end=args.to_date,
                    asof=args.asof,universe_csv=args.universe_csv,
                    overrides_csv=args.overrides_csv,pause=args.pause_seconds,refresh=args.refresh,
-                   universe_name=args.universe_name)
+                   universe_name=args.universe_name,only_symbols=args.only_symbols)
     print(json.dumps(report,indent=2))
     if report['errors']: raise SystemExit(2)
 

@@ -147,3 +147,65 @@ def test_model_uses_custom_universe_and_never_tunes_on_2017_2019(tmp_path):
     (report_folder/f'{universe_name}_{snapshot}_2017-01-01_2019-12-31_summary.json').unlink()
     with pytest.raises(ValueError,match='Missing Yahoo download audit'):
         verify_download_audits(root,snapshot,universe_name=universe_name)
+
+
+def test_persistent_error_log_names_dates_retries_and_cached_success(tmp_path):
+    """Failures persist across runs; a successful stock-year is not fetched again."""
+    csv_file=tmp_path/'constituents.csv'
+    csv_file.write_text('Symbol,Company Name,ISIN Code\n' + ''.join(
+        f'S{i:02d},Company {i:02d},INE{i:09d}\n' for i in range(50)))
+    root=tmp_path/'shared'
+    seen=[]
+    def first(ticker,*,start,end,**kwargs):
+        seen.append((ticker,start,end))
+        if ticker=='S01.NS':
+            raise TimeoutError('Yahoo 429 rate limit')
+        return fake_downloader(ticker,start=start,end=end,**kwargs)
+    options=dict(root=root,start='2015-01-01',end='2015-12-31',asof='2026-10-18',
+                 universe_csv=csv_file,only_symbols=['S00','S01'],pause=0)
+    summary=collect(**options,downloader=first)
+    assert summary['errors']==1 and summary['downloaded']==1
+    assert summary['partial_universe'] is True
+    log_path=tmp_path/'shared'/'reports'/'yahoo_finance'/'nifty50_download_errors.csv'
+    assert summary['persistent_error_csv']==str(log_path)
+    errors=pd.read_csv(log_path,keep_default_na=False)
+    assert len(errors)==1
+    error=errors.iloc[0]
+    assert error.symbol=='S01' and error.company_name=='Company 01'
+    assert error.from_date=='2015-01-01' and error.to_date=='2015-12-31'
+    assert error.error_type=='TimeoutError' and '429' in error.error_message
+    assert summary['requests_or_cache_checks']==2
+    attempted=[]
+    def fixed(ticker,*,start,end,**kwargs):
+        attempted.append(ticker)
+        return fake_downloader(ticker,start=start,end=end,**kwargs)
+    next_run=collect(**options,downloader=fixed)
+    assert attempted==['S01.NS']
+    assert next_run['cached']==1 and next_run['downloaded']==1 and next_run['errors']==0
+    # Append-only record remains available after the failed year succeeds.
+    assert len(pd.read_csv(log_path))==1
+    last_run=collect(**options,downloader=lambda *a,**k: (_ for _ in ()).throw(
+        AssertionError('All successful stock-years should be cached')))
+    assert last_run['cached']==2 and last_run['downloaded']==0 and last_run['errors']==0
+    assert len(pd.read_csv(log_path))==1
+    assert next_run['status_csv'] == summary['status_csv']  # same scoped audit
+    assert '_subset_' in summary['status_csv']
+
+
+def test_empty_download_logged_and_retried_without_overwriting_cached_stock(tmp_path):
+    csv_file=tmp_path/'stocks.csv';csv_file.write_text(csv_universe())
+    opts=dict(root=tmp_path/'data',start='2013-01-01',end='2013-12-31',
+              asof='2026-10-18',universe_csv=csv_file,pause=0,only_symbols=['S00','S02'])
+    a=collect(**opts,downloader=fake_downloader)
+    assert a['downloaded']==1 and a['no_data_unverified']==1
+    log=pd.read_csv(a['persistent_error_csv'])
+    assert log.status.iloc[0]=='no_data_unverified'
+    assert log.year.iloc[0]==2013 and log.symbol.iloc[0]=='S02'
+    seen=[]
+    def recovering(ticker,*,start,end,**kwargs):
+        seen.append(ticker)
+        return fake_downloader('S00.NS',start=start,end=end,**kwargs)
+    b=collect(**opts,downloader=recovering)
+    assert seen==['S02.NS']
+    assert b['cached']==1 and b['downloaded']==1
+    assert len(pd.read_csv(a['persistent_error_csv']))==1
