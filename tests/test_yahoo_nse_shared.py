@@ -34,6 +34,9 @@ def test_yahoo_stages_save_and_cache_without_login(tmp_path):
     snapshot = load_universe(root, '2026-10-18')
     assert len(snapshot)==50 and snapshot.yahoo_ticker.iloc[0]=='S00.NS'
     assert len(load_daily(root,snapshot,'2015-01-01','2015-12-31'))==98
+    # Simulate Windows CRLF from a previously saved CSV snapshot.
+    snapshot_file=root/'universes'/'nifty50'/'2026-10-18.csv'
+    snapshot_file.write_bytes(snapshot_file.read_bytes().replace(b'\n',b'\r\n'))
     calls=[]
     def no_download(*a,**k):
         calls.append(a)

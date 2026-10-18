@@ -80,12 +80,15 @@ def freeze_snapshot(root: Path, *, asof: str, constituents: pd.DataFrame,
     location=Path(root)/'universes'/universe_name
     location.mkdir(parents=True,exist_ok=True)
     dest=location/f'{asof}.csv'
-    csv=constituents.to_csv(index=False)
+    csv=constituents.to_csv(index=False,lineterminator='\n')
     if dest.exists():
-        if dest.read_text(encoding='utf-8') != csv:
+        # Cross-platform logical comparison: Windows CRLF must not create a false
+        # same-day snapshot conflict on a subsequent download invocation.
+        observed=pd.read_csv(dest,dtype=str).fillna('')
+        if observed.to_dict('records') != constituents.to_dict('records'):
             raise ValueError('Snapshot changed on the same as-of date: refuse overwrite')
     else:
-        dest.write_text(csv,encoding='utf-8')
+        dest.write_bytes(csv.encode('utf-8'))
     meta=location/f'{asof}.json'
     if not meta.exists():
         meta.write_text(json.dumps({'asof':asof,'source':source,
