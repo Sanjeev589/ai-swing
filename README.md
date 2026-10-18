@@ -93,3 +93,7 @@ This open/close/volume dataset does not satisfy the existing OHLCV loader: high 
 ## Experimental regime-filtered AI swing trading (paper-only)
 
 See [the AI swing research runner](backtesting/AI_SWING_README.md) for Nifty 500 market-regime screening, breakout/pullback entries, purged walk-forward LightGBM vs a non-AI ranking comparator, and capital/stop-loss management. Existing OHLCV history ends in 2022 and is unadjusted; do not treat the outputs as live or validated performance.
+
+## Upstox V3 current Nifty 50 daily-data research (2000–2019)
+
+The [staged Upstox Nifty 50 guide](docs/UPSTOX_NIFTY50_STAGE1.md) adds an authenticated daily OHLCV collector that writes to a **shared directory outside this Git repository** (`INDIA_MARKET_DATA_HOME`) with immutable dated universe snapshots, yearly ISIN-partitioned CSV.gz, and audit reports. Train only on 2000–2016 matured labels and evaluate an untouched 2017–2019 holdout with LightGBM and a momentum baseline. Access tokens are never persisted; prices are corporate-action-unverified and the current Nifty 50 is not point-in-time historical membership. These are research outputs, not evidence of trading profitability. Live trading remains disabled.
