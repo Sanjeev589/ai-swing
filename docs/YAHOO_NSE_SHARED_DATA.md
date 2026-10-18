@@ -79,3 +79,33 @@ The same ISIN/year candles can be shared across baskets. Different basket defini
 Historical limitations: listed-after-2000 stocks lack earlier observations; present-day Nifty membership creates survivorship bias; ticker/ISIN changes may require explicit correction; Yahoo downloads may fail or throttle; corporate actions must be checked independently; trade simulations are simplified and do not account for overnight liquidity shocks, actual taxes, order-book impact or intraday stops. No claim of profitability or verified live win rate is made. **Do not repeatedly tune on the 2017–2019 holdout.** Keep 2020+ unopened until choosing a model using earlier data.
 
 Official primary sources: [Nifty 50 constituents](https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv), [Nifty 500 constituents](https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv), [NSE market reports](https://www.nseindia.com/all-reports), and [yfinance project](https://github.com/ranaroussi/yfinance). Respect all provider and exchange data-usage terms and redistribution rules.
+
+## Persistent failed-download log and safe resume
+
+The collector writes **two different kinds of audit data** to the external shared data folder:
+
+- `reports/yahoo_finance/nifty50_download_errors.csv` — **append-only** persistent failure history, including the timestamp of the attempt, stock symbol, company name (when present in the constituent CSV), ISIN, Yahoo ticker, attempted year, requested `from_date` and `to_date`, and error description. Empty Yahoo responses are logged as `no_data_unverified`, not declared IPO gaps or successful downloads.
+- `reports/yahoo_finance/nifty50_<SNAPSHOT>_<FROM>_<TO>_status.csv` — latest per-stock/year state (`downloaded`, `cached`, `no_data_unverified`, `error`). A diagnostic subset has a `_subset_...` suffix, so it does **not** overwrite the normal full-universe audit.
+
+The collector already stores successful downloads in `candles/yahoo_finance/NSE_EQ/1d/<ISIN>/<YEAR>.csv.gz`. On the **next run with the same external data root**, it checks each existing partition's stock/ISIN/year identity and **does not download that partition again**. Only missing/failed/empty stock-years are attempted again. The old failure log is retained even after a retry succeeds. **Do not supply `--refresh`** unless you intentionally want to replace successfully cached data.
+
+If every stock-year is failing, first try a tiny recent historical sample (completed calendar year):
+
+```powershell
+cd C:\path\to\ai-swing
+git pull origin main
+$env:INDIA_MARKET_DATA_HOME = 'D:\IndianMarketData'
+python -m marketdata.yahoo_nifty50 `
+  --universe-name nifty50 --from-date 2015-01-01 --to-date 2015-12-31 `
+  --only-symbols RELIANCE TCS --pause-seconds 2
+```
+
+Inspect the persistent error file; it is populated as each attempt fails, even if the process is interrupted. Then run the full 2000–2016 command again without `--only-symbols` to resume. If you used `--asof` previously, provide the same value on subsequent runs and keep the constituent snapshot consistent. The targeted subset is for diagnostics; the training command **requires both complete full-universe audits** and cannot use a subset status file.
+
+```powershell
+Import-Csv 'D:\IndianMarketData\reports\yahoo_finance\nifty50_download_errors.csv' |
+  Select-Object -Last 15 symbol,company_name,year,from_date,to_date,error_type,error_message |
+  Format-Table -AutoSize
+```
+
+Common causes of all-stock errors include Yahoo rate limits, proxy/DNS/TLS failures, provider endpoint changes, or Python library version issues. The log shows which failure happened on your machine. A no-data year before a company's listing is not automatically considered an error, but it cannot be used to train the model. For live trading, Yahoo is not an exchange-approved execution feed.
