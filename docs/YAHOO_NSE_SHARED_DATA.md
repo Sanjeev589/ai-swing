@@ -109,3 +109,145 @@ Import-Csv 'D:\IndianMarketData\reports\yahoo_finance\nifty50_download_errors.cs
 ```
 
 Common causes of all-stock errors include Yahoo rate limits, proxy/DNS/TLS failures, provider endpoint changes, or Python library version issues. The log shows which failure happened on your machine. A no-data year before a company's listing is not automatically considered an error, but it cannot be used to train the model. For live trading, Yahoo is not an exchange-approved execution feed.
+
+## Download errors: human-managed `ignore=true` (Nifty 50 or Nifty 500)
+
+The persistent, editable CSV for each basket is:
+
+- `D:\IndianMarketData\reports\yahoo_finance\nifty50_download_errors.csv`
+- `D:\IndianMarketData\reports\yahoo_finance\nifty500_download_errors.csv`
+
+Open it in Excel, locate a stock-year **by both `isin` and `year`**, and set the new
+`ignore` column to `true` or `false` (case insensitive). Close Excel before rerunning
+Python. `ignore=true` skips that **Yahoo stock-year only**, even if the entire
+period is requested again. `ignore=false` (the default) retries on future runs.
+If multiple historical error rows exist for the same ISIN and year, edit the **last
+matching row**, which determines the active policy. The existing CSV is upgraded
+to add `ignore=false` without discarding prior errors or manual edits.
+
+**Only set `ignore=true` when you have independently confirmed the period cannot
+be downloaded (for example before the stock was listed).** Yahoo 429, 401/403,
+timeouts, outages, and symbol-change issues should normally stay `false` so
+other providers can recover them. Ignored years have status `ignored`, count
+separately from `error` and `no_data_unverified` in the current report, and have
+**no invented OHLCV**. When the Yahoo cache already contains valid data, the
+existing successful partition is reused. Ignoring a Yahoo failure does **not**
+block importing that stock-year from an alternative data vendor.
+
+For your currently reported first-stage Nifty 50 collection: training-period
+checks were 13 downloaded, 603 cached, 192 no-data, 42 errors; holdout checks
+were 141 downloaded, 9 no-data, 0 errors. Confirm whether the 42 errors are
+genuine non-listings or transient Yahoo failures before marking anything ignored.
+After rerunning, `models.nifty50_stage1` will only accept a complete 850-check
+2000–2016 report with zero current run errors. `ignored` years do not count as
+successful data; they are explicit user-approved omissions.
+
+## Download current Nifty 500 history from 2000, no broker account
+
+From the `ai-swing` repository folder (PowerShell):
+
+```powershell
+# New basket has its own immutable constituent snapshot and audit reports;
+# candles by ISIN/year are reused if already collected for Nifty 50.
+git pull origin main
+$env:INDIA_MARKET_DATA_HOME = 'D:\IndianMarketData'
+$snapshot500 = Get-Date -Format 'yyyy-MM-dd'
+
+python -m marketdata.yahoo_nifty50 --universe-name nifty500 `
+  --from-date 2000-01-01 --to-date 2016-12-31 --asof $snapshot500
+
+python -m marketdata.yahoo_nifty50 --universe-name nifty500 `
+  --from-date 2017-01-01 --to-date 2019-12-31 --asof $snapshot500
+```
+
+The first downloader run retrieves a **current** Nifty 500 basket, not the
+constituent list from 2000. Pre-listing years cannot have prices. Keep the same
+`$snapshot500` for both runs, and do not use `--refresh` unless you deliberately
+want to redownload historical partitions.
+
+For a quick diagnostic subset without overwriting a full download audit:
+
+```powershell
+python -m marketdata.yahoo_nifty50 --universe-name nifty500 `
+  --from-date 2015-01-01 --to-date 2015-12-31 --asof $snapshot500 `
+  --only-symbols RELIANCE TCS
+```
+
+## Switch data providers without changing the model's input format
+
+The normalized OHLCV schema **never depends on the source site**:
+`date,symbol,isin,open,high,low,close,volume`.
+Each vendor has a separate ISIN/year cache. No existing Yahoo partition is
+replaced with NSE raw prices or a different vendor's prices. A research-ready
+*source-selected copy* is kept independently under:
+
+```
+D:\IndianMarketData\candles\research_ohlcv\NSE_EQ\1d\<ISIN>\<YEAR>.csv.gz
+D:\IndianMarketData\candles\research_ohlcv\NSE_EQ\1d\<ISIN>\<YEAR>.source.json
+```
+
+`source.json` records the originating vendor, original file checksum and the
+selected normalized file checksum. Rerunning the build **does not change already
+selected stock-year data**, even if you change provider priority. The AI model
+always receives the same feature schema; changing the *data itself* can change
+model outcomes and requires deliberate retraining/re-evaluation.
+
+### First build the model-independent dataset from Yahoo history
+
+```powershell
+python -m marketdata.research_store --snapshot $snapshot500 `
+  --universe-name nifty500 build `
+  --from-date 2000-01-01 --to-date 2016-12-31 `
+  --sources yahoo_finance
+
+python -m marketdata.research_store --snapshot $snapshot500 `
+  --universe-name nifty500 build `
+  --from-date 2017-01-01 --to-date 2019-12-31 `
+  --sources yahoo_finance
+```
+
+Inspect the resulting `reports\research_ohlcv\..._summary.json` and per-year
+`..._status.csv` for `missing` and `errors`. Missing partitions remain missing,
+not guessed. Build reports count every Nifty 500 stock-year checked.
+
+### Later, fill missing Yahoo years from another provider
+
+Obtain properly licensed, **corporate-action-adjusted daily OHLCV** as a CSV for
+one stock and calendar year (e.g. `2013`); the file needs
+`date,symbol,open,high,low,close,volume` (plus optional `isin`). For example:
+
+```powershell
+# This is an example of a user-supplied CSV, not a promised download service.
+python -m marketdata.research_store --snapshot $snapshot500 `
+  --universe-name nifty500 import `
+  --source ext_alternative_vendor --csv 'D:\incoming\2013_RELIANCE.csv' `
+  --confirm-adjusted-ohlcv
+
+# Fill previously missing years from either vendor; already selected
+# research_ohlcv partitions are reused rather than overwritten.
+python -m marketdata.research_store --snapshot $snapshot500 `
+  --universe-name nifty500 build `
+  --from-date 2000-01-01 --to-date 2016-12-31 `
+  --sources yahoo_finance ext_alternative_vendor
+```
+
+Unadjusted `nse_raw` is intentionally **not accepted** as adjusted training
+history. The importer validates stock identity, price ranges, duplicate dates,
+calendar years and records source checksums. It does not certify an external
+provider's adjustment accuracy. Check splits, bonuses, symbol migrations,
+missing sessions, data-use licences, and survivor bias before relying on returns.
+
+### Train against the stable source-selected view
+
+```powershell
+python -m models.nifty50_stage1 --universe-name nifty500 `
+  --snapshot $snapshot500 --price-source research_ohlcv `
+  --allow-unverified-adjustments `
+  --output artifacts/yahoo_nifty500_stage1
+```
+
+The same train/holdout split remains 2000–2016 vs. 2017–2019. New vendor data
+is **not** automatically substituted into a previously trained model. The model
+and outputs remain inside `ai-swing/artifacts`, while canonical candles reside
+outside the repo for use by `MyTradingview` and other projects. Live orders stay
+disabled.

@@ -30,23 +30,66 @@ PROVIDER = 'yahoo_finance'
 ERROR_COLUMNS = (
     'logged_at_utc', 'universe_name', 'snapshot', 'company_name', 'symbol',
     'isin', 'ticker', 'year', 'from_date', 'to_date', 'status', 'error_type',
-    'error_message',
+    'error_message', 'ignore',
 )
 
 
-def _append_download_issue(path: Path, record: dict) -> None:
-    """Durably append an unsuccessful stock-year attempt, including its date range.
+def _issue_policy(path: Path, *, universe_name: str) -> set[tuple[str, int]]:
+    """Migrate existing log and honor the LAST human-edited ignore value per ISIN/year.
 
-    Separate from the per-run status CSV, which is intentionally replaced on reruns.
-    Store neither credentials nor HTTP authorization headers in this file.
+    Ignore applies to this Yahoo collector only; independent providers may still
+    fill the omitted stock-years. Existing success cache wins over ignore.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    needs_header = not path.exists() or path.stat().st_size == 0
-    with path.open('a', newline='', encoding='utf-8') as handle:
-        writer = csv.DictWriter(handle, fieldnames=ERROR_COLUMNS, extrasaction='ignore')
-        if needs_header:
+    if not path.exists() or path.stat().st_size == 0:
+        return set()
+    with path.open('r', newline='', encoding='utf-8-sig') as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames or not set(ERROR_COLUMNS[:-1]).issubset(reader.fieldnames):
+            raise ValueError(f'Invalid existing error CSV headers: {path}')
+        names = list(reader.fieldnames)
+        rows = list(reader)
+    # Old error logs predate the ignore column. Preserve all earlier rows
+    # and any user-added columns; add ignore=false once, atomically.
+    if 'ignore' not in names:
+        names.append('ignore')
+        for row in rows:
+            row['ignore'] = 'false'
+        tmp = path.with_suffix('.migration.tmp')
+        with tmp.open('w', newline='', encoding='utf-8') as handle:
+            writer = csv.DictWriter(handle, fieldnames=names)
             writer.writeheader()
-        writer.writerow(record)
+            writer.writerows(rows)
+        tmp.replace(path)
+    policy = {}
+    for row in rows:
+        raw = (row.get('ignore') or 'false').strip().lower()
+        if raw not in ('true', 'false'):
+            raise ValueError(f'ignore must be true/false in {path} for {row.get("symbol")} {row.get("year")}')
+        if row.get('universe_name') != universe_name:
+            continue
+        try:
+            key = (row['isin'].strip().upper(), int(row['year']))
+        except (KeyError, ValueError) as exc:
+            raise ValueError(f'Invalid ISIN/year in {path}') from exc
+        policy[key] = (raw == 'true')
+    return {key for key, ignored in policy.items() if ignored}
+
+
+def _append_download_issue(path: Path, record: dict) -> None:
+    """Append failed/empty requests, keeping human-added ignore flags intact."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and path.stat().st_size:
+        with path.open('r', newline='', encoding='utf-8-sig') as handle:
+            fields = list(csv.DictReader(handle).fieldnames or [])
+        if 'ignore' not in fields:
+            raise ValueError('Existing error log needs ignore-column migration first')
+    else:
+        fields = list(ERROR_COLUMNS)
+    with path.open('a', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction='ignore')
+        if handle.tell() == 0:
+            writer.writeheader()
+        writer.writerow({**record, 'ignore': 'false'})
         handle.flush()
 
 
@@ -224,6 +267,7 @@ def collect(*, root=None, start='2000-01-01', end='2016-12-31',
     folder = root/'reports'/PROVIDER
     folder.mkdir(parents=True, exist_ok=True)
     error_log = folder/f'{universe_name}_download_errors.csv'
+    ignored_stock_years = _issue_policy(error_log, universe_name=universe_name)
     if downloader is None:
         import yfinance as yf
         downloader=yf.download
@@ -245,6 +289,8 @@ def collect(*, root=None, start='2000-01-01', end='2016-12-31',
                     if bars.symbol.iloc[0]!=item.symbol or bars['isin'].iloc[0]!=item.isin or not bars.date.dt.year.eq(year).all():
                         raise ValueError('Existing cache identity/year mismatch')
                     outcome.update(status='cached',rows=len(bars))
+                elif (item.isin, year) in ignored_stock_years:
+                    outcome.update(status='ignored', error='Manually marked ignore=true in Yahoo error CSV')
                 else:
                     raw=_download_ticker(item.yahoo_ticker,year_start,f'{year+1}-01-01',downloader,pause=pause)
                     bars=normalize_yahoo(raw,symbol=item.symbol,isin=item.isin,year=year)
@@ -277,6 +323,7 @@ def collect(*, root=None, start='2000-01-01', end='2016-12-31',
             'partial_universe':chosen is not None, 'requests_or_cache_checks':len(status),
             'downloaded':int(counts.get('downloaded',0)),
             'cached':int(counts.get('cached',0)),
+            'ignored':int(counts.get('ignored',0)),
             'no_data_unverified':int(counts.get('no_data_unverified',0)),
             'errors':int(counts.get('error',0)),
             'source':'Yahoo Finance via yfinance; auto_adjust=True',
@@ -285,6 +332,7 @@ def collect(*, root=None, start='2000-01-01', end='2016-12-31',
             'status_csv':str(folder/f'{stem}_status.csv'),
             'persistent_error_csv':str(error_log),
             'cached_stock_years_not_redownloaded':int(counts.get('cached',0)),
+            'ignored_stock_years_not_redownloaded':int(counts.get('ignored',0)),
             'live_trading_enabled':False}
     _atomic_json(folder/f'{stem}_summary.json',report)
     return report
