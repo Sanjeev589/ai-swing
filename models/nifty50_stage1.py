@@ -85,23 +85,26 @@ def _paper_cohorts(predictions: pd.DataFrame, *, rank_by: str, sessions: pd.Date
 
 
 
-def verify_download_audits(root: Path, snapshot: str, universe_name: str = 'nifty50') -> list[dict]:
+def verify_download_audits(root: Path, snapshot: str, universe_name: str = 'nifty50',
+                           price_source: str = 'yahoo_finance') -> list[dict]:
     """Fail closed unless every requested stock/year was checked without HTTP errors."""
     count = len(load_universe(root, snapshot, universe_name=universe_name))
+    if price_source not in ('yahoo_finance', 'research_ohlcv'):
+        raise ValueError('Unsupported model price source')
     audits=[]
     for start,end,years in ((TRAIN_BEGIN,TRAIN_END,17),(VALID_BEGIN,VALID_END,3)):
         filename = f'{universe_name}_{snapshot}_{start}_{end}_summary.json'
-        path = root/'reports'/'yahoo_finance'/filename
+        path = root/'reports'/price_source/filename
         if not path.exists():
             raise ValueError(f'Missing Yahoo download audit: {path}; finish both downloads first')
         report=json.loads(path.read_text())
         expected=count*years
         if (report.get('universe_size') != count or
             report.get('requests_or_cache_checks') != expected or
-            report.get('errors') != 0 or report.get('provider') != 'yahoo_finance' or
+            report.get('errors') != 0 or report.get('provider') != price_source or
             report.get('snapshot') != snapshot or report.get('universe_name') != universe_name or
             report.get('start') != start or report.get('end') != end):
-            raise ValueError(f'Incomplete/failed Yahoo download audit: {path}')
+            raise ValueError(f'Incomplete/failed {price_source} download audit: {path}')
         audits.append(report)
     return audits
 
@@ -109,16 +112,18 @@ def verify_download_audits(root: Path, snapshot: str, universe_name: str = 'nift
 def train_and_validate(*, root, snapshot: str, output: str = 'artifacts/yahoo_nifty50_stage1',
                        horizon: int = 5, top_k: int = 5, estimators: int = 100,
                        cost_bps_per_side: float = 25., allow_unverified_adjustments: bool = False,
-                       universe_name: str = 'nifty50'):
+                       universe_name: str = 'nifty50',
+                       price_source: str = 'yahoo_finance'):
     """Fits on label-matured pre-2017 samples; 2017–2019 only scores and evaluates."""
     if min(horizon, top_k, estimators) < 1 or cost_bps_per_side < 0 or cost_bps_per_side >= 10000:
         raise ValueError('Invalid model, holding period, top-k or cost settings')
     if not allow_unverified_adjustments:
         raise ValueError('Yahoo adjusted OHLCV quality is unverified; pass --allow-unverified-adjustments for exploratory research only')
     root = data_root(root)
-    audits = verify_download_audits(root, snapshot, universe_name=universe_name)
+    audits = verify_download_audits(root, snapshot, universe_name=universe_name,
+                                   price_source=price_source)
     constituents = load_universe(root, snapshot, universe_name=universe_name)
-    raw = load_daily(root, constituents, TRAIN_BEGIN, VALID_END)
+    raw = load_daily(root, constituents, TRAIN_BEGIN, VALID_END, provider=price_source)
     frame = _eligible_features(raw, horizon)
     feature_names = __import__('features.technical_indicators', fromlist=['FEATURES']).FEATURES
     train = frame[(frame.date <= pd.Timestamp(TRAIN_END)) &
@@ -155,6 +160,7 @@ def train_and_validate(*, root, snapshot: str, output: str = 'artifacts/yahoo_ni
     coverage.to_csv(output/'stock_coverage.csv', index=False)
     summary = {'experiment':f'stage1_fixed_{universe_name}_snapshot_2000_2019','universe_name':universe_name,
                'universe_snapshot':snapshot,'current_constituents_not_historical_membership':True,
+               'price_source':price_source,
                'training_period':[TRAIN_BEGIN, TRAIN_END], 'held_out_period':[VALID_BEGIN,VALID_END],
                'training_label_end_latest':str(train.label_end_date.max().date()),
                'train_rows':int(len(train)), 'train_sessions':int(train.date.nunique()),
@@ -162,10 +168,11 @@ def train_and_validate(*, root, snapshot: str, output: str = 'artifacts/yahoo_ni
                'holdout_sessions':int(holdout.date.nunique()),'holdout_symbols':int(holdout.symbol.nunique()),
                'horizon_sessions':horizon,'top_k':top_k, 'features':list(feature_names),
                'estimators':estimators,'results':results,'future_test_2020_onwards_untouched':True,
-               'prices_corporate_actions':'Yahoo auto_adjust=True; independently UNVERIFIED — RESEARCH ONLY',
+               'prices_corporate_actions':'Source provider-adjusted OHLCV; independently UNVERIFIED — RESEARCH ONLY',
                'validated_download_audits':[{'start':a['start'],'end':a['end'],
                     'request_checks':a['requests_or_cache_checks'],'errors':a['errors'],
-                    'no_data_unverified':a.get('no_data_unverified',0)} for a in audits],
+                    'no_data_unverified':a.get('no_data_unverified',0),
+                    'ignored':a.get('ignored',0), 'missing':a.get('missing',0)} for a in audits],
                'data_license':'Check Yahoo and NSE licenses and download terms before reuse or distribution',
                'limitations':['Current Nifty 50 contains survivorship bias in older years.',
                               'Not all present Nifty 50 stocks traded in 2000.',
@@ -186,6 +193,8 @@ def main():
     p.add_argument('--data-root', help='Shared data folder OUTSIDE ai-swing')
     p.add_argument('--snapshot', required=True, help='Current stock-universe snapshot date stored by downloader')
     p.add_argument('--universe-name',default='nifty50',help='Same universe name as downloader')
+    p.add_argument('--price-source',choices=['yahoo_finance','research_ohlcv'],default='yahoo_finance',
+                   help='Research OHLCV is the stable mixed-source view; raw provider caches are never overwritten')
     p.add_argument('--output', default='artifacts/yahoo_nifty50_stage1')
     p.add_argument('--horizon',type=int,default=5);p.add_argument('--top-k',type=int,default=5)
     p.add_argument('--estimators',type=int,default=100);p.add_argument('--cost-bps-per-side',type=float,default=25.)
@@ -195,7 +204,7 @@ def main():
                horizon=args.horizon,top_k=args.top_k,estimators=args.estimators,
                cost_bps_per_side=args.cost_bps_per_side,
                allow_unverified_adjustments=args.allow_unverified_adjustments,
-               universe_name=args.universe_name),indent=2))
+               universe_name=args.universe_name,price_source=args.price_source),indent=2))
 
 
 if __name__=='__main__':
