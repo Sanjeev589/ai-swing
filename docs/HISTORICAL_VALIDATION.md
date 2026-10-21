@@ -69,8 +69,11 @@ For `approved_adjusted` fill in:
   blank to allow publishing, but the resulting summary reports the number of
   undocumented approvals and each partition records `approval_documented=false`.
   Blank fields **do not** establish that price adjustments were verified.
-- `trim_prelisting`: `true` only if you verified that a stock-year contains some
-  legitimate *post-listing* observations and want to drop prior rows.
+- `trim_prelisting`: retained for compatibility, but no longer required.
+  For an approved stock-year with a known verified listing date, the build
+  automatically removes pre-listing rows from the new research copy. The source
+  CSV/GZIP is never modified. The build report includes the exact number
+  of automatically trimmed rows and examples.
 
 The `finding`, `isin_mismatch`, `kaggle_only_dates`, `max_abs_ratio_step_pct`,
 `yahoo_large_jumps`, and prelisting counts help prioritize your review. A large
@@ -112,13 +115,17 @@ python -m marketdata.historical_validation `
 
 Publishing **fails closed** if a reviewed period contains even one
 `requires_review` row, if selected source data is absent or mismatched by ISIN,
-or if a partially pre-listing stock-year has not been explicitly trimmed.
+while requiring explicit review of remaining stock-year sources.
 Fully pre-listing stock-years are **automatically excluded by verified listing
 rules**, even if an earlier manual decision approved them; the build summary
 reports `automatically_excluded_prelisting_stock_years` and sample identities.
 The review CSV is not modified by the build. Listing-year records containing
-only pre-listing sessions are also excluded; listing-year records with both
-pre- and post-listing sessions still require `trim_prelisting=true`.
+only pre-listing sessions are also excluded. For approved listing-year records with
+both pre- and post-listing sessions, the build automatically trims the invalid
+earlier rows without requiring `trim_prelisting=true`. It reports
+`automatically_trimmed_prelisting_stock_years`, `automatically_trimmed_prelisting_rows`
+and sample symbols, and stores a trim count in each research partition's metadata.
+Only independently verified dates in `listing_rules.csv` trigger this behavior.
 Evidence URL and note are optional. Selecting `kaggle_raw` writes warnings and unadjusted provenance,
 but does not block the build. If the first run finds pending rows, fill the review CSV first; no
 partitions from that run are published. Reviewed omissions remain absent,
