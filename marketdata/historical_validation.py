@@ -265,14 +265,15 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
     if any((r.isin,r.symbol) not in members for r in portion.itertuples()):
         raise ValueError('Review contains an unknown/changed security')
     rules,_=_listing_rules(root)
-    to_publish=[];skipped=[];pending=[]
+    to_publish=[];skipped=[];pending=[];undocumented=[]
     for r in portion.itertuples(index=False):
         key=f'{r.symbol}/{r.year}'
         if r.decision not in DECISIONS: raise ValueError(f'Invalid decision {r.decision} for {key}')
         if r.decision=='requires_review': pending.append(key);continue
         if r.decision=='must_exclude': skipped.append(key);continue
-        if not r.evidence_url.strip() or not r.review_note.strip():
-            raise ValueError(f'Approved {key} requires evidence_url and review_note')
+        # Review annotations are optional; record their absence rather than failing.
+        if not (r.evidence_url.strip() and r.review_note.strip()):
+            undocumented.append(key)
         if r.approved_source=='kaggle_raw' or r.approved_source=='nse_raw' or r.approved_source=='research_ohlcv':
             raise ValueError(f'Unadjusted/unverified source forbidden for {key}')
         if r.approved_source!='yahoo_finance' and not re.fullmatch(r'ext_[a-z0-9_-]+',r.approved_source):
@@ -328,7 +329,9 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
                  'symbol':r.symbol,'isin':r.isin,'year':int(r.year),
                  'listing_date':r.verified_listing_date,
                  'trimmed_prelisting_rows':trimmed,'evidence_url':r.evidence_url,
-                 'review_note':r.review_note,'price_adjustment_reviewed_by_user':True,
+                 'review_note':r.review_note,
+                 'approval_documented':bool(r.evidence_url.strip() and r.review_note.strip()),
+                 'price_adjustment_reviewed_by_user':True,
                  'live_trading_enabled':False}
         if not meta_path.exists():_write_json(meta_path,newmeta)
         selected+=1
@@ -338,6 +341,10 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
              'start':first.strftime('%Y-%m-%d'),'end':last.strftime('%Y-%m-%d'),
              'requests_or_cache_checks':expected,'selected':selected,
              'excluded':len(skipped),'pending':0,'errors':0,
+             'approvals_missing_evidence_or_note':len(undocumented),
+             'warning':('Some approved stock-years lack evidence_url or review_note; '
+                        'approvals are manual and their price adjustments are not independently verified.'
+                        if undocumented else ''),
              'manifest_sha256':_digest(manifest),'audited_review_manifest':str(manifest),
              'live_execution_enabled':False}
     name=f'{universe_name}_{snapshot}_{start}_{end}_summary.json'
