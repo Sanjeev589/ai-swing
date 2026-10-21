@@ -61,8 +61,13 @@ For `approved_adjusted` fill in:
 - `approved_source`: `yahoo_finance`, `kaggle_raw`, or an existing reviewed import `ext_<vendor>`.
   `nse_raw` and `research_ohlcv` remain blocked. Only select `kaggle_raw` if you
   intentionally accept raw historical prices and their corporate-action risks.
-  The matching Kaggle ISIN must be present in `kaggle/stock_metadata.csv`, and
-  `candles/kaggle_raw` must have been populated by the Kaggle audit.
+  If Kaggle has the matching ISIN and cached year, its raw data are used. If Kaggle
+  has no matching stock/ISIN or year (e.g. SBILIFE), the build automatically uses
+  **only the Yahoo cache whose SHA-256 matches the existing audit manifest**.
+  If Yahoo is also absent, that stock-year is excluded. Changed/unaudited Yahoo
+  bytes still cause an error rather than an unsafe fallback. The requested source
+  remains in the review CSV; the actual source and fallback reason appear in
+  research partition `*.source.json`, and all fallbacks/exclusions in the report.
 - `evidence_url` **(optional)**: supporting information (exchange, corporate action, vendor methodology).
 - `review_note` **(optional)**: your reason and adjustment verification. The program cannot
   independently certify price adjustments merely from these fields. Both may be left
@@ -126,8 +131,14 @@ earlier rows without requiring `trim_prelisting=true`. It reports
 `automatically_trimmed_prelisting_stock_years`, `automatically_trimmed_prelisting_rows`
 and sample symbols, and stores a trim count in each research partition's metadata.
 Only independently verified dates in `listing_rules.csv` trigger this behavior.
-Evidence URL and note are optional. Selecting `kaggle_raw` writes warnings and unadjusted provenance,
-but does not block the build. If the first run finds pending rows, fill the review CSV first; no
+Evidence URL and note are optional. Selecting `kaggle_raw` writes warnings and unadjusted provenance
+when Kaggle is actually used. When Kaggle is unavailable, an audit-matching Yahoo
+fallback (or source-unavailable exclusion) is recorded in
+`kaggle_to_yahoo_fallback_stock_years` / `kaggle_unavailable_excluded_stock_years`.
+No source partition or review CSV is modified; this also works when the 2000–2016
+`v2` dataset has already been built. The fallback source uses its actual
+`source=yahoo_finance` provenance, rather than falsely labelling it Kaggle.
+This choice is intended for exploratory use and should be inspected before model training. If the first run finds pending rows, fill the review CSV first; no
 partitions from that run are published. Reviewed omissions remain absent,
 **not synthesized**. Revisions after publication require a new version (`v3`).
 

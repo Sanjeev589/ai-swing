@@ -268,6 +268,7 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
     rules,_=_listing_rules(root)
     kaggle_isins=_kaggle_isins(root)
     to_publish=[];skipped=[];pending=[];undocumented=[];raw_kaggle=[];auto_excluded_prelisting=[];auto_trimmed_prelisting=[]
+    kaggle_yahoo_fallbacks=[];kaggle_unavailable_exclusions=[]
     for r in portion.itertuples(index=False):
         key=f'{r.symbol}/{r.year}'
         if r.decision not in DECISIONS: raise ValueError(f'Invalid decision {r.decision} for {key}')
@@ -285,17 +286,41 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
             raise ValueError(f'Unreviewed source forbidden for {key}')
         if r.approved_source not in ('yahoo_finance','kaggle_raw') and not re.fullmatch(r'ext_[a-z0-9_-]+',r.approved_source):
             raise ValueError(f'Only Yahoo, Kaggle raw or imported ext_ source allowed: {key}')
+        actual_source=r.approved_source
+        kaggle_issue=''
         if r.approved_source=='kaggle_raw':
-            # Imported Kaggle data are already partitioned by the frozen universe
-            # ISIN, but confirm the metadata still identifies the same security.
-            if kaggle_isins.get(r.symbol) != r.isin:
-                raise ValueError(f'Kaggle ISIN/metadata mismatch for {key}; resolve security identity before selecting kaggle_raw')
-        source=bar_path(root,r.isin,int(r.year),r.approved_source)
+            # Kaggle has older constituent coverage; never import a mismatched
+            # security under the current ISIN or fabricate absent history.
+            k_isin=kaggle_isins.get(r.symbol)
+            k_path=bar_path(root,r.isin,int(r.year),'kaggle_raw')
+            if k_isin is None:
+                kaggle_issue='kaggle_symbol_not_in_metadata'
+            elif k_isin!=r.isin:
+                kaggle_issue='kaggle_isin_differs_from_frozen_universe'
+            elif not k_path.is_file():
+                kaggle_issue='kaggle_stock_year_not_cached'
+            if kaggle_issue:
+                # Yahoo fallback is allowed ONLY with an audit-matching SHA-256.
+                # An unavailable Yahoo partition is excluded without modifying
+                # the operator's review manifest or existing research data.
+                yahoo=bar_path(root,r.isin,int(r.year),'yahoo_finance')
+                if not yahoo.is_file():
+                    skipped.append(key)
+                    kaggle_unavailable_exclusions.append({
+                        'symbol':r.symbol,'year':int(r.year),'reason':kaggle_issue})
+                    continue
+                if not r.source_sha256 or _digest(yahoo)!=r.source_sha256:
+                    raise ValueError(
+                        f'{key}: Kaggle unavailable ({kaggle_issue}), and Yahoo '
+                        'checksum is missing/changed since audit; rerun audit '
+                        'with a new version before approving this source')
+                actual_source='yahoo_finance'
+        source=bar_path(root,r.isin,int(r.year),actual_source)
         if not source.is_file():raise FileNotFoundError(f'Approved {key}: missing selected source {source}; run Kaggle audit with caching or change approved_source')
         data=_load_prices(source,r.symbol,r.isin,int(r.year))
-        if r.approved_source=='yahoo_finance' and _digest(source)!=r.source_sha256:
+        if actual_source=='yahoo_finance' and _digest(source)!=r.source_sha256:
             raise ValueError(f'Yahoo source changed since audit: {key}; rerun audit with a new version')
-        if r.approved_source.startswith('ext_'):
+        if actual_source.startswith('ext_'):
             extmeta=source.with_name(f'{r.year}.source.json')
             if not extmeta.is_file() or json.loads(extmeta.read_text()).get('cache_sha256')!=_digest(source):
                 raise ValueError(f'Approved external source needs verified import metadata: {key}')
@@ -321,9 +346,14 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
         # Only count documentation and raw Kaggle years actually published.
         if not (r.evidence_url.strip() and r.review_note.strip()):
             undocumented.append(key)
-        if r.approved_source=='kaggle_raw':
+        if actual_source=='kaggle_raw':
             raw_kaggle.append(key)
-        to_publish.append((r,source,data,trimmed))
+        if kaggle_issue:
+            kaggle_yahoo_fallbacks.append({
+                'symbol':r.symbol,'year':int(r.year),
+                'requested_source':'kaggle_raw','used_source':actual_source,
+                'reason':kaggle_issue})
+        to_publish.append((r,actual_source,source,data,trimmed,kaggle_issue))
     if pending:
         raise ValueError(f'Cannot build: {len(pending)} unreviewed stock-years (e.g. {pending[:8]}); classify approved_adjusted or must_exclude in {manifest}')
     out_dir=root/'reports'/provider
@@ -333,14 +363,14 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
         if earlier.get('manifest_sha256') != _digest(manifest):
             raise ValueError('Dataset version already published with another review manifest; choose a new version')
     # Perform complete preflight, including existing data immutability, BEFORE any writes.
-    for r,source,data,trimmed in to_publish:
+    for r,actual_source,source,data,trimmed,kaggle_issue in to_publish:
         target=bar_path(root,r.isin,int(r.year),provider)
         source_meta=target.with_name(f'{r.year}.source.json')
         if target.exists():
             if not source_meta.exists():raise ValueError(f'Missing version provenance: {target}')
             old=json.loads(source_meta.read_text())
             if (old.get('source_sha256')!=_digest(source) or
-                old.get('source')!=r.approved_source or
+                old.get('source')!=actual_source or
                 old.get('trimmed_prelisting_rows')!=trimmed or
                 old.get('canonical_sha256')!=_digest(target)):
                 raise ValueError(f'Existing dataset {version} is immutable; create a NEW version instead of changing {target}')
@@ -348,10 +378,12 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
             if not old_frame.reset_index(drop=True).equals(validate_bars(data).reset_index(drop=True)):
                 raise ValueError(f'Existing approved candles differ in version {version}: {target}')
     selected=0
-    for r,source,data,trimmed in to_publish:
+    for r,actual_source,source,data,trimmed,kaggle_issue in to_publish:
         target=save_year(root,data,isin=r.isin,year=int(r.year),provider=provider)
         meta_path=target.with_name(f'{r.year}.source.json')
-        newmeta={'version':version,'source':r.approved_source,
+        newmeta={'version':version,'source':actual_source,
+                 'requested_source':r.approved_source,
+                 'source_fallback_reason':kaggle_issue,
                  'source_sha256':_digest(source),'canonical_sha256':_digest(target),
                  'symbol':r.symbol,'isin':r.isin,'year':int(r.year),
                  'listing_date':str(rules[r.symbol][0].date()) if r.symbol in rules else r.verified_listing_date,
@@ -360,9 +392,9 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
                  'evidence_url':r.evidence_url,
                  'review_note':r.review_note,
                  'approval_documented':bool(r.evidence_url.strip() and r.review_note.strip()),
-                 'price_basis':('raw_unadjusted' if r.approved_source=='kaggle_raw' else 'provider_adjusted_unverified'),
-                 'user_approved_raw':r.approved_source=='kaggle_raw',
-                 'price_adjustment_reviewed_by_user':r.approved_source!='kaggle_raw',
+                 'price_basis':('raw_unadjusted' if actual_source=='kaggle_raw' else 'provider_adjusted_unverified'),
+                 'user_approved_raw':actual_source=='kaggle_raw',
+                 'price_adjustment_reviewed_by_user':actual_source!='kaggle_raw',
                  'live_trading_enabled':False}
         if not meta_path.exists():_write_json(meta_path,newmeta)
         selected+=1
@@ -379,7 +411,13 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
              'automatically_trimmed_prelisting_examples':auto_trimmed_prelisting[:20],
              'approvals_missing_evidence_or_note':len(undocumented),
              'raw_kaggle_stock_years':len(raw_kaggle),
+             'kaggle_to_yahoo_fallback_stock_years':len(kaggle_yahoo_fallbacks),
+             'kaggle_to_yahoo_fallback_examples':kaggle_yahoo_fallbacks[:20],
+             'kaggle_unavailable_excluded_stock_years':len(kaggle_unavailable_exclusions),
+             'kaggle_unavailable_excluded_examples':kaggle_unavailable_exclusions[:20],
              'warning':(' '.join(w for w in [
+                 ('Some requested Kaggle stock-years were missing or had unmatched ISIN metadata; SHA-256-audited Yahoo prices were used instead and identified in source metadata.' if kaggle_yahoo_fallbacks else ''),
+                 ('Other unavailable Kaggle stock-years had no Yahoo partition and were excluded rather than fabricated.' if kaggle_unavailable_exclusions else ''),
                  ('Some approved stock-years were automatically trimmed to verified NSE listing dates; original vendor files remain unchanged.' if auto_trimmed_prelisting else ''),
                  ('Some approved stock-years lack evidence_url or review_note; approvals are manual and their price adjustments are not independently verified.' if undocumented else ''),
                  ('WARNING: raw Kaggle stock-years are explicitly selected but NOT split/dividend adjusted. Mixing raw Kaggle with Yahoo-adjusted prices can corrupt returns and technical indicators; research only.' if raw_kaggle else ''),
