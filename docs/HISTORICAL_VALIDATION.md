@@ -1,9 +1,11 @@
 # Historical security validation and versioned training-data recovery
 
 This is an **offline review and controlled-data publication stage** for `ai-swing`.
-Do not replace Yahoo-adjusted candles with Kaggle's raw OHLCV. This workflow requires
-human verification of identity, NSE listing dates, corporate actions, and the
-adjustment basis **before** any stock-year enters a NEW versioned model dataset.
+Do not overwrite the original Yahoo-adjusted candles. You can **explicitly select**
+`kaggle_raw` for a stock-year in the review CSV for exploratory research. Such
+prices are UNADJUSTED, and mixing them with Yahoo-adjusted history can create
+artificial returns and technical indicators. The new versioned model dataset
+records source and adjustment warnings; it is not automatically corrected.
 
 It preserves three separate inputs under `INDIA_MARKET_DATA_HOME`:
 
@@ -52,12 +54,15 @@ Every stock/calendar-year row has `decision`:
 | --- | --- |
 | `requires_review` | Default: this year CANNOT enter the reviewed model data. |
 | `must_exclude` | Exclude the year, e.g. confirmed pre-listing/no trustworthy adjusted data. |
-| `approved_adjusted` | Manually approve adjusted data after checking security identity and corporate actions. Evidence fields are recommended, not mandatory. |
+| `approved_adjusted` | Explicitly choose a provider (adjusted Yahoo, reviewed external, or deliberately raw Kaggle) for a stock-year. With Kaggle, this label does **not** mean prices were adjusted. |
 
 For `approved_adjusted` fill in:
 
-- `approved_source`: `yahoo_finance` or an existing verified import `ext_<vendor>`;
-  **never** `kaggle_raw` or `nse_raw`.
+- `approved_source`: `yahoo_finance`, `kaggle_raw`, or an existing reviewed import `ext_<vendor>`.
+  `nse_raw` and `research_ohlcv` remain blocked. Only select `kaggle_raw` if you
+  intentionally accept raw historical prices and their corporate-action risks.
+  The matching Kaggle ISIN must be present in `kaggle/stock_metadata.csv`, and
+  `candles/kaggle_raw` must have been populated by the Kaggle audit.
 - `evidence_url` **(optional)**: supporting information (exchange, corporate action, vendor methodology).
 - `review_note` **(optional)**: your reason and adjustment verification. The program cannot
   independently certify price adjustments merely from these fields. Both may be left
@@ -77,9 +82,9 @@ Yahoo checksum, Kaggle identity, and verified listing date have not changed.
 
 ### 3. Optional: Import independently adjusted missing history
 
-If Kaggle reveals missing records, **do not feed raw Kaggle prices directly**.
-Obtain/prepare verified corporate-action-adjusted OHLCV for one stock/year and
-import it using the existing importer:
+If you prefer adjusted rather than explicitly raw Kaggle history, obtain/prepare
+reviewed corporate-action-adjusted OHLCV for one stock/year and import it using
+the existing importer:
 
 ```powershell
 python -m marketdata.research_store `
@@ -106,9 +111,10 @@ python -m marketdata.historical_validation `
 ```
 
 Publishing **fails closed** if a reviewed period contains even one
-`requires_review` row, if selected OHLCV lacks cited review evidence, if
-unadjusted Kaggle is chosen, or if pre-listing dates have not been explicitly
-handled. If the first run finds pending rows, fill the review CSV first; no
+`requires_review` row, if selected source data is absent or mismatched by ISIN,
+or if pre-listing dates have not been explicitly handled. Evidence URL and note
+are optional. Selecting `kaggle_raw` writes warnings and unadjusted provenance,
+but does not block the build. If the first run finds pending rows, fill the review CSV first; no
 partitions from that run are published. Reviewed omissions remain absent,
 **not synthesized**. Revisions after publication require a new version (`v3`).
 
@@ -123,11 +129,15 @@ python -m models.nifty50_stage1 `
 
 Both versioned audit summaries must have complete 850/150 stock-year checks,
 zero errors, zero pending rows, and **the same reviewed manifest hash**.
-The model also checks each canonical candle's recorded SHA-256 and source approval.
+The model also checks each canonical candle's recorded SHA-256 and source approval,
+including explicit Kaggle raw provenance.
 It writes `dataset_fingerprint_sha256` to the model report. The old trained
 model and baseline reports remain untouched.
 
-**Important interpretation:** `approved_adjusted` means *reviewed by the operator*,
-not guaranteed exchange-verified. The current trading simulation still has
+**Important interpretation:** `approved_adjusted` means *selected by the operator*,
+not guaranteed exchange-verified or adjusted. When Kaggle raw is included,
+`raw_kaggle_stock_years` and an explicit warning appear in the research build
+and model reports. Never interpret a raw/Yahoo-adjusted price discontinuity as
+a real market return. The current trading simulation still has
 survivorship bias and simplified next-open fills; it does not enable live trading.
 The 2017–2019 holdout should not be used repeatedly to select hyperparameters.

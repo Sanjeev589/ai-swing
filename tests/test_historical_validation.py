@@ -7,7 +7,7 @@ import pytest
 
 from marketdata.historical_validation import audit, build, price_provider
 from marketdata.shared_store import save_year,bar_path
-from models.nifty50_stage1 import verify_download_audits
+from models.nifty50_stage1 import verify_download_audits, verify_versioned_provenance
 
 SNAP='2026-10-18'
 NAME='review_test'
@@ -110,13 +110,13 @@ def test_raw_kaggle_never_accepted_and_external_provenance(tmp_path):
     d.loc[d.symbol=='ITC','decision']='approved_adjusted'
     d.loc[d.symbol=='ITC','evidence_url']='https://example.org/reviewed'
     d.loc[d.symbol=='ITC','review_note']='Adjusted CSV verified'
-    d.loc[d.symbol=='ITC','approved_source']='kaggle_raw'
+    d.loc[d.symbol=='ITC','approved_source']='nse_raw'
     d.to_csv(p,index=False)
-    with pytest.raises(ValueError,match='Unadjusted/unverified source'):
+    with pytest.raises(ValueError,match='Unreviewed source forbidden'):
         build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
     d.loc[d.symbol=='ITC','approved_source']='ext_checked'
     d.to_csv(p,index=False)
-    with pytest.raises(FileNotFoundError,match='missing adjusted source'):
+    with pytest.raises(FileNotFoundError,match='missing selected source'):
         build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
 
 
@@ -173,3 +173,90 @@ def test_complete_approval_has_no_documentation_warning(tmp_path):
     target=bar_path(root,'INE154A01025',2004,'research_v2')
     metadata=json.loads(target.with_name('2004.source.json').read_text())
     assert metadata['approval_documented'] is True
+
+
+def test_explicit_kaggle_raw_build_has_unadjusted_provenance(tmp_path):
+    root=setup(tmp_path)
+    kaggle=root/'kaggle';kaggle.mkdir()
+    pd.DataFrame({'Symbol':['TCS','BAJAJ-AUTO','ITC'],
+                  'ISIN Code':['INE467B01029','INE917I01010','INE154A01025']}).to_csv(kaggle/'stock_metadata.csv',index=False)
+    save_year(root, prices('ITC','INE154A01025',2004), isin='INE154A01025', year=2004, provider='kaggle_raw')
+    audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    p=manifest(root);d=pd.read_csv(p,dtype=str,keep_default_na=False)
+    d.loc[d.symbol=='TCS','decision']='must_exclude'
+    d.loc[d.symbol=='ITC','decision']='approved_adjusted'
+    d.loc[d.symbol=='ITC','approved_source']='kaggle_raw'
+    d.to_csv(p,index=False)
+    result=build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    assert result['selected']==1
+    assert result['raw_kaggle_stock_years']==1
+    assert 'not split/dividend adjusted' in result['warning'].lower()
+    target=bar_path(root,'INE154A01025',2004,'research_v2')
+    assert target.exists()
+    metadata=json.loads(target.with_name('2004.source.json').read_text())
+    assert metadata['source']=='kaggle_raw'
+    assert metadata['price_basis']=='raw_unadjusted'
+    assert metadata['user_approved_raw'] is True
+    assert metadata['price_adjustment_reviewed_by_user'] is False
+    assert bar_path(root,'INE154A01025',2004,'yahoo_finance').exists()
+    assert build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')['raw_kaggle_stock_years']==1
+
+
+def test_kaggle_isin_mismatch_does_not_relabel_security(tmp_path):
+    root=setup(tmp_path)
+    kaggle=root/'kaggle';kaggle.mkdir()
+    pd.DataFrame({'Symbol':['TCS','ITC'], 'ISIN Code':['INE467B01029','INE154A01017']}).to_csv(kaggle/'stock_metadata.csv',index=False)
+    save_year(root, prices('ITC','INE154A01025',2004), isin='INE154A01025', year=2004, provider='kaggle_raw')
+    audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    p=manifest(root);d=pd.read_csv(p,dtype=str,keep_default_na=False)
+    d.loc[d.symbol=='TCS','decision']='must_exclude'
+    d.loc[d.symbol=='ITC','decision']='approved_adjusted'
+    d.loc[d.symbol=='ITC','approved_source']='kaggle_raw'
+    d.to_csv(p,index=False)
+    with pytest.raises(ValueError,match='Kaggle ISIN/metadata mismatch'):
+        build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    assert not bar_path(root,'INE154A01025',2004,'research_v2').exists()
+
+
+def test_kaggle_selected_without_cached_partition_errors_clearly(tmp_path):
+    root=setup(tmp_path)
+    kaggle=root/'kaggle';kaggle.mkdir()
+    pd.DataFrame({'Symbol':['ITC'], 'ISIN Code':['INE154A01025']}).to_csv(kaggle/'stock_metadata.csv',index=False)
+    audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    p=manifest(root);d=pd.read_csv(p,dtype=str,keep_default_na=False)
+    d.loc[d.symbol=='TCS','decision']='must_exclude'
+    d.loc[d.symbol=='ITC','decision']='approved_adjusted'
+    d.loc[d.symbol=='ITC','approved_source']='kaggle_raw'
+    d.to_csv(p,index=False)
+    with pytest.raises(FileNotFoundError,match='run Kaggle audit'):
+        build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+
+
+def test_model_fingerprint_accepts_only_explicit_raw_provenance(tmp_path):
+    root=setup(tmp_path)
+    kaggle=root/'kaggle';kaggle.mkdir()
+    pd.DataFrame({'Symbol':['ITC'], 'ISIN Code':['INE154A01025']}).to_csv(kaggle/'stock_metadata.csv',index=False)
+    save_year(root,prices('ITC','INE154A01025',2004),isin='INE154A01025',year=2004,provider='kaggle_raw')
+    audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    p=manifest(root);d=pd.read_csv(p,dtype=str,keep_default_na=False)
+    d.loc[d.symbol=='TCS','decision']='must_exclude'
+    d.loc[d.symbol=='ITC','decision']='approved_adjusted'
+    d.loc[d.symbol=='ITC','approved_source']='kaggle_raw'
+    d.to_csv(p,index=False)
+    build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    symbols=pd.read_csv(root/'universes'/NAME/f'{SNAP}.csv',dtype=str)
+    fingerprint,count=verify_versioned_provenance(root,symbols,'research_v2','manifest-sha')
+    assert len(fingerprint)==64
+    assert count==1
+    target=bar_path(root,'INE154A01025',2004,'research_v2')
+    meta=target.with_name('2004.source.json')
+    data=json.loads(meta.read_text())
+    data['user_approved_raw']=False
+    meta.write_text(json.dumps(data))
+    with pytest.raises(ValueError,match='explicit unadjusted approval'):
+        verify_versioned_provenance(root,symbols,'research_v2','manifest-sha')
+    data['user_approved_raw']=True
+    meta.write_text(json.dumps(data))
+    target.write_bytes(b'corrupt file')
+    with pytest.raises(ValueError,match='changed version partition'):
+        verify_versioned_provenance(root,symbols,'research_v2','manifest-sha')
