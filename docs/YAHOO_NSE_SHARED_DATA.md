@@ -251,3 +251,6 @@ is **not** automatically substituted into a previously trained model. The model
 and outputs remain inside `ai-swing/artifacts`, while canonical candles reside
 outside the repo for use by `MyTradingview` and other projects. Live orders stay
 disabled.
+## Kaggle historical CSV audit and recovery
+
+See [Kaggle Nifty 50 import and safe recovery](KAGGLE_NIFTY50_IMPORT.md). Extract the Kaggle ZIP directly inside `INDIA_MARKET_DATA_HOME/kaggle`; run `python -m marketdata.kaggle_nifty50 --snapshot <the original snapshot date>` to compare Kaggle raw OHLCV with existing Yahoo adjusted history. Kaggle is **not an adjusted-price replacement**. The importer writes its own `kaggle_raw` cache and reports; it does not change Yahoo, `research_ohlcv`, or trained models.
