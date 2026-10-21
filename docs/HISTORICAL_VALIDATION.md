@@ -112,8 +112,14 @@ python -m marketdata.historical_validation `
 
 Publishing **fails closed** if a reviewed period contains even one
 `requires_review` row, if selected source data is absent or mismatched by ISIN,
-or if pre-listing dates have not been explicitly handled. Evidence URL and note
-are optional. Selecting `kaggle_raw` writes warnings and unadjusted provenance,
+or if a partially pre-listing stock-year has not been explicitly trimmed.
+Fully pre-listing stock-years are **automatically excluded by verified listing
+rules**, even if an earlier manual decision approved them; the build summary
+reports `automatically_excluded_prelisting_stock_years` and sample identities.
+The review CSV is not modified by the build. Listing-year records containing
+only pre-listing sessions are also excluded; listing-year records with both
+pre- and post-listing sessions still require `trim_prelisting=true`.
+Evidence URL and note are optional. Selecting `kaggle_raw` writes warnings and unadjusted provenance,
 but does not block the build. If the first run finds pending rows, fill the review CSV first; no
 partitions from that run are published. Reviewed omissions remain absent,
 **not synthesized**. Revisions after publication require a new version (`v3`).

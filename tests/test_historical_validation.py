@@ -260,3 +260,72 @@ def test_model_fingerprint_accepts_only_explicit_raw_provenance(tmp_path):
     target.write_bytes(b'corrupt file')
     with pytest.raises(ValueError,match='changed version partition'):
         verify_versioned_provenance(root,symbols,'research_v2','manifest-sha')
+
+
+def test_approved_entirely_prelisting_year_excluded_without_editing_review(tmp_path):
+    root=setup(tmp_path)
+    audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    p=manifest(root);d=pd.read_csv(p,dtype=str,keep_default_na=False)
+    # BAJAJ-AUTO's independently verified listing is 2008, not 2004.
+    d.loc[d.symbol=='BAJAJ-AUTO','decision']='approved_adjusted'
+    d.loc[d.symbol=='BAJAJ-AUTO','approved_source']='kaggle_raw'
+    d.loc[d.symbol=='TCS','decision']='must_exclude'
+    d.loc[d.symbol=='ITC','decision']='approved_adjusted'
+    d.to_csv(p,index=False)
+    original=p.read_bytes()
+    result=build(root=root,snapshot=SNAP,universe_name=NAME,
+                 start='2004-01-01',end='2004-12-31')
+    assert result['selected']==1
+    assert result['excluded']==2
+    assert result['automatically_excluded_prelisting_stock_years']==1
+    assert result['automatically_excluded_prelisting_examples']==['BAJAJ-AUTO/2004']
+    assert result['raw_kaggle_stock_years']==0
+    assert p.read_bytes()==original  # do not silently rewrite operator decisions
+    assert not bar_path(root,'INE917I01010',2004,'research_v2').exists()
+
+
+def test_undecided_entirely_prelisting_year_is_safely_excluded(tmp_path):
+    root=setup(tmp_path)
+    audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    p=manifest(root);d=pd.read_csv(p,dtype=str,keep_default_na=False)
+    d.loc[d.symbol=='BAJAJ-AUTO','decision']='requires_review'
+    d.loc[d.symbol=='TCS','decision']='must_exclude'
+    d.loc[d.symbol=='ITC','decision']='approved_adjusted'
+    d.to_csv(p,index=False)
+    result=build(root=root,snapshot=SNAP,universe_name=NAME,
+                 start='2004-01-01',end='2004-12-31')
+    assert result['automatically_excluded_prelisting_stock_years']==1
+    assert result['excluded']==2 and result['selected']==1
+
+
+def test_listing_year_with_only_prelisting_prices_is_auto_excluded(tmp_path):
+    root=setup(tmp_path)
+    # All TCS 2004 rows precede TCS's verified 2004-08-25 listing.
+    path=bar_path(root,'INE467B01029',2004,'yahoo_finance')
+    path.unlink()
+    save_year(root,prices('TCS','INE467B01029',2004,days=['2004-06-01']),
+              isin='INE467B01029',year=2004,provider='yahoo_finance')
+    audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    p=manifest(root);d=pd.read_csv(p,dtype=str,keep_default_na=False)
+    d.loc[d.symbol=='TCS','decision']='approved_adjusted'
+    d.loc[d.symbol=='TCS','trim_prelisting']='true'
+    d.loc[d.symbol=='ITC','decision']='approved_adjusted'
+    d.to_csv(p,index=False)
+    result=build(root=root,snapshot=SNAP,universe_name=NAME,
+                 start='2004-01-01',end='2004-12-31')
+    assert result['selected']==1
+    assert result['automatically_excluded_prelisting_stock_years']==1
+    assert result['automatically_excluded_prelisting_examples']==['TCS/2004']
+    assert not bar_path(root,'INE467B01029',2004,'research_v2').exists()
+
+
+def test_partial_listing_year_requires_explicit_trim_approval(tmp_path):
+    root=setup(tmp_path)
+    audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    p=manifest(root);d=pd.read_csv(p,dtype=str,keep_default_na=False)
+    d.loc[d.symbol=='TCS','decision']='approved_adjusted'
+    d.loc[d.symbol=='ITC','decision']='approved_adjusted'
+    d.to_csv(p,index=False)
+    with pytest.raises(ValueError,match='trim_prelisting=true'):
+        build(root=root,snapshot=SNAP,universe_name=NAME,
+              start='2004-01-01',end='2004-12-31')
