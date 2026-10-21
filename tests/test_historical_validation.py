@@ -206,7 +206,7 @@ def test_explicit_kaggle_raw_build_has_unadjusted_provenance(tmp_path):
     assert build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')['raw_kaggle_stock_years']==1
 
 
-def test_kaggle_isin_mismatch_does_not_relabel_security(tmp_path):
+def test_kaggle_isin_mismatch_uses_only_checksum_audited_yahoo(tmp_path):
     root=setup(tmp_path)
     kaggle=root/'kaggle';kaggle.mkdir()
     pd.DataFrame({'Symbol':['TCS','ITC'], 'ISIN Code':['INE467B01029','INE154A01017']}).to_csv(kaggle/'stock_metadata.csv',index=False)
@@ -217,12 +217,21 @@ def test_kaggle_isin_mismatch_does_not_relabel_security(tmp_path):
     d.loc[d.symbol=='ITC','decision']='approved_adjusted'
     d.loc[d.symbol=='ITC','approved_source']='kaggle_raw'
     d.to_csv(p,index=False)
-    with pytest.raises(ValueError,match='Kaggle ISIN/metadata mismatch'):
-        build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
-    assert not bar_path(root,'INE154A01025',2004,'research_v2').exists()
+    summary=build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    assert summary['selected']==1
+    assert summary['raw_kaggle_stock_years']==0
+    assert summary['kaggle_to_yahoo_fallback_stock_years']==1
+    assert summary['kaggle_to_yahoo_fallback_examples'][0]['reason']=='kaggle_isin_differs_from_frozen_universe'
+    target=bar_path(root,'INE154A01025',2004,'research_v2')
+    meta=json.loads(target.with_name('2004.source.json').read_text())
+    assert meta['source']=='yahoo_finance'
+    assert meta['requested_source']=='kaggle_raw'
+    assert meta['source_fallback_reason']=='kaggle_isin_differs_from_frozen_universe'
+    assert pd.read_csv(target).equals(pd.read_csv(bar_path(root,'INE154A01025',2004,'yahoo_finance')))
 
 
-def test_kaggle_selected_without_cached_partition_errors_clearly(tmp_path):
+
+def test_kaggle_selected_without_cached_partition_uses_audited_yahoo(tmp_path):
     root=setup(tmp_path)
     kaggle=root/'kaggle';kaggle.mkdir()
     pd.DataFrame({'Symbol':['ITC'], 'ISIN Code':['INE154A01025']}).to_csv(kaggle/'stock_metadata.csv',index=False)
@@ -232,8 +241,12 @@ def test_kaggle_selected_without_cached_partition_errors_clearly(tmp_path):
     d.loc[d.symbol=='ITC','decision']='approved_adjusted'
     d.loc[d.symbol=='ITC','approved_source']='kaggle_raw'
     d.to_csv(p,index=False)
-    with pytest.raises(FileNotFoundError,match='run Kaggle audit'):
-        build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    report=build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    assert report['kaggle_to_yahoo_fallback_stock_years']==1
+    assert report['kaggle_to_yahoo_fallback_examples'][0]['reason']=='kaggle_stock_year_not_cached'
+    target=bar_path(root,'INE154A01025',2004,'research_v2')
+    assert json.loads(target.with_name('2004.source.json').read_text())['source']=='yahoo_finance'
+
 
 
 def test_model_fingerprint_accepts_only_explicit_raw_provenance(tmp_path):
@@ -396,3 +409,65 @@ def test_listing_year_all_prelisting_still_excluded_without_trim_flag(tmp_path):
     assert result['automatically_excluded_prelisting_examples']==['TCS/2004']
     assert result['automatically_trimmed_prelisting_rows']==0
     assert not bar_path(root,'INE467B01029',2004,'research_v2').exists()
+
+
+def test_missing_kaggle_symbol_falls_back_to_audited_yahoo(tmp_path):
+    root=setup(tmp_path)
+    kaggle=root/'kaggle';kaggle.mkdir()
+    # ITC represents a newer constituent absent from the historic Kaggle file.
+    pd.DataFrame({'Symbol':['TCS'],'ISIN Code':['INE467B01029']}).to_csv(kaggle/'stock_metadata.csv',index=False)
+    audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    p=manifest(root);df=pd.read_csv(p,dtype=str,keep_default_na=False)
+    df.loc[df.symbol=='TCS','decision']='must_exclude'
+    df.loc[df.symbol=='ITC','decision']='approved_adjusted'
+    df.loc[df.symbol=='ITC','approved_source']='kaggle_raw'
+    df.to_csv(p,index=False)
+    before=p.read_bytes()
+    report=build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    assert report['kaggle_to_yahoo_fallback_stock_years']==1
+    assert report['kaggle_to_yahoo_fallback_examples'][0]['reason']=='kaggle_symbol_not_in_metadata'
+    assert report['selected']==1 and report['excluded']==2
+    assert p.read_bytes()==before
+    meta=bar_path(root,'INE154A01025',2004,'research_v2').with_name('2004.source.json')
+    provenance=json.loads(meta.read_text())
+    assert provenance['source']=='yahoo_finance'
+    assert provenance['requested_source']=='kaggle_raw'
+    assert provenance['source_fallback_reason']=='kaggle_symbol_not_in_metadata'
+    assert 'Yahoo prices were used instead' in report['warning']
+
+
+def test_missing_kaggle_and_yahoo_excludes_instead_of_fabricating(tmp_path):
+    root=setup(tmp_path)
+    yahoo=bar_path(root,'INE154A01025',2004,'yahoo_finance')
+    yahoo.unlink()
+    kaggle=root/'kaggle';kaggle.mkdir()
+    pd.DataFrame({'Symbol':['TCS'],'ISIN Code':['INE467B01029']}).to_csv(kaggle/'stock_metadata.csv',index=False)
+    audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    p=manifest(root);df=pd.read_csv(p,dtype=str,keep_default_na=False)
+    df.loc[df.symbol=='TCS','decision']='must_exclude'
+    df.loc[df.symbol=='ITC','decision']='approved_adjusted'
+    df.loc[df.symbol=='ITC','approved_source']='kaggle_raw'
+    df.to_csv(p,index=False)
+    report=build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    assert report['selected']==0
+    assert report['excluded']==3
+    assert report['kaggle_unavailable_excluded_stock_years']==1
+    assert not bar_path(root,'INE154A01025',2004,'research_v2').exists()
+
+
+def test_kaggle_fallback_refuses_changed_yahoo_cache(tmp_path):
+    root=setup(tmp_path)
+    kaggle=root/'kaggle';kaggle.mkdir()
+    pd.DataFrame({'Symbol':['TCS'],'ISIN Code':['INE467B01029']}).to_csv(kaggle/'stock_metadata.csv',index=False)
+    audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    p=manifest(root);df=pd.read_csv(p,dtype=str,keep_default_na=False)
+    df.loc[df.symbol=='TCS','decision']='must_exclude'
+    df.loc[df.symbol=='ITC','decision']='approved_adjusted'
+    df.loc[df.symbol=='ITC','approved_source']='kaggle_raw'
+    df.to_csv(p,index=False)
+    yahoo=bar_path(root,'INE154A01025',2004,'yahoo_finance')
+    before=yahoo.read_bytes()
+    yahoo.write_bytes(before+b'changed')
+    with pytest.raises(ValueError,match='checksum is missing/changed'):
+        build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    assert not bar_path(root,'INE154A01025',2004,'research_v2').exists()
