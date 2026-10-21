@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 COLUMNS = ('date', 'symbol', 'isin', 'open', 'high', 'low', 'close', 'volume')
-PROVIDERS = {'yahoo_finance', 'nse_raw', 'research_ohlcv'}
+PROVIDERS = {'yahoo_finance', 'nse_raw', 'kaggle_raw', 'research_ohlcv'}
 
 
 def data_root(value: str | Path | None = None) -> Path:
