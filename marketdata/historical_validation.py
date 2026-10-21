@@ -1,7 +1,7 @@
 """Review historical NSE identity/listings and adjusted-price suitability before modeling.
 
-No external network calls. The operator must verify and approve source identity and
-corporate-action adjustments using independent evidence; Kaggle raw is NEVER model input.
+No external network calls. Users may explicitly approve raw Kaggle prices for research;
+this does NOT verify corporate-action adjustments and is labelled as such in provenance.
 The immutable, versioned selected price data live under research_<version>.
 """
 from __future__ import annotations
@@ -245,8 +245,9 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
           start='2000-01-01',end='2016-12-31'):
     """Publish reviewed, non-overwriting stock-year files for a versioned model run.
 
-    All stock-years must be explicitly classified; data are never promoted from raw
-    Kaggle. A second build (holdout years) is needed before model training.
+    All stock-years must be explicitly classified. Kaggle raw can be selected
+    intentionally but is labelled unadjusted. A second build (holdout years) is
+    needed before model training.
     """
     root=data_root(root);provider=price_provider(version)
     first,last=pd.Timestamp(start),pd.Timestamp(end)
@@ -265,7 +266,8 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
     if any((r.isin,r.symbol) not in members for r in portion.itertuples()):
         raise ValueError('Review contains an unknown/changed security')
     rules,_=_listing_rules(root)
-    to_publish=[];skipped=[];pending=[];undocumented=[]
+    kaggle_isins=_kaggle_isins(root)
+    to_publish=[];skipped=[];pending=[];undocumented=[];raw_kaggle=[]
     for r in portion.itertuples(index=False):
         key=f'{r.symbol}/{r.year}'
         if r.decision not in DECISIONS: raise ValueError(f'Invalid decision {r.decision} for {key}')
@@ -274,12 +276,18 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
         # Review annotations are optional; record their absence rather than failing.
         if not (r.evidence_url.strip() and r.review_note.strip()):
             undocumented.append(key)
-        if r.approved_source=='kaggle_raw' or r.approved_source=='nse_raw' or r.approved_source=='research_ohlcv':
-            raise ValueError(f'Unadjusted/unverified source forbidden for {key}')
-        if r.approved_source!='yahoo_finance' and not re.fullmatch(r'ext_[a-z0-9_-]+',r.approved_source):
-            raise ValueError(f'Only Yahoo or independently adjusted ext_ source allowed: {key}')
+        if r.approved_source in ('nse_raw','research_ohlcv'):
+            raise ValueError(f'Unreviewed source forbidden for {key}')
+        if r.approved_source not in ('yahoo_finance','kaggle_raw') and not re.fullmatch(r'ext_[a-z0-9_-]+',r.approved_source):
+            raise ValueError(f'Only Yahoo, Kaggle raw or imported ext_ source allowed: {key}')
+        if r.approved_source=='kaggle_raw':
+            # Imported Kaggle data are already partitioned by the frozen universe
+            # ISIN, but confirm the metadata still identifies the same security.
+            if kaggle_isins.get(r.symbol) != r.isin:
+                raise ValueError(f'Kaggle ISIN/metadata mismatch for {key}; resolve security identity before selecting kaggle_raw')
+            raw_kaggle.append(key)
         source=bar_path(root,r.isin,int(r.year),r.approved_source)
-        if not source.is_file():raise FileNotFoundError(f'Approved {key}: missing adjusted source {source}')
+        if not source.is_file():raise FileNotFoundError(f'Approved {key}: missing selected source {source}; run Kaggle audit with caching or change approved_source')
         data=_load_prices(source,r.symbol,r.isin,int(r.year))
         if r.approved_source=='yahoo_finance' and _digest(source)!=r.source_sha256:
             raise ValueError(f'Yahoo source changed since audit: {key}; rerun audit with a new version')
@@ -331,7 +339,9 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
                  'trimmed_prelisting_rows':trimmed,'evidence_url':r.evidence_url,
                  'review_note':r.review_note,
                  'approval_documented':bool(r.evidence_url.strip() and r.review_note.strip()),
-                 'price_adjustment_reviewed_by_user':True,
+                 'price_basis':('raw_unadjusted' if r.approved_source=='kaggle_raw' else 'provider_adjusted_unverified'),
+                 'user_approved_raw':r.approved_source=='kaggle_raw',
+                 'price_adjustment_reviewed_by_user':r.approved_source!='kaggle_raw',
                  'live_trading_enabled':False}
         if not meta_path.exists():_write_json(meta_path,newmeta)
         selected+=1
@@ -342,9 +352,11 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
              'requests_or_cache_checks':expected,'selected':selected,
              'excluded':len(skipped),'pending':0,'errors':0,
              'approvals_missing_evidence_or_note':len(undocumented),
-             'warning':('Some approved stock-years lack evidence_url or review_note; '
-                        'approvals are manual and their price adjustments are not independently verified.'
-                        if undocumented else ''),
+             'raw_kaggle_stock_years':len(raw_kaggle),
+             'warning':(' '.join(w for w in [
+                 ('Some approved stock-years lack evidence_url or review_note; approvals are manual and their price adjustments are not independently verified.' if undocumented else ''),
+                 ('WARNING: raw Kaggle stock-years are explicitly selected but NOT split/dividend adjusted. Mixing raw Kaggle with Yahoo-adjusted prices can corrupt returns and technical indicators; research only.' if raw_kaggle else ''),
+             ] if w)),
              'manifest_sha256':_digest(manifest),'audited_review_manifest':str(manifest),
              'live_execution_enabled':False}
     name=f'{universe_name}_{snapshot}_{start}_{end}_summary.json'

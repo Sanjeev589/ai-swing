@@ -116,6 +116,35 @@ def verify_download_audits(root: Path, snapshot: str, universe_name: str = 'nift
     return audits
 
 
+def verify_versioned_provenance(root, constituents, price_source, manifest_sha):
+    """Verify immutable research inputs; count intentionally selected unadjusted Kaggle years."""
+    checks=[]
+    raw_kaggle_stock_years=0
+    for item in constituents.itertuples(index=False):
+        for year in range(2000,2020):
+            file=bar_path(root,item.isin,year,price_source)
+            if not file.exists():continue
+            meta=file.with_name(f'{year}.source.json')
+            if not meta.exists():raise ValueError(f'Missing approved version provenance: {file}')
+            provenance=json.loads(meta.read_text())
+            source=provenance.get('source')
+            if (source == 'nse_raw' or
+                provenance.get('canonical_sha256') != hashlib.sha256(file.read_bytes()).hexdigest()):
+                raise ValueError(f'Unverified or changed version partition: {file}')
+            if source=='kaggle_raw':
+                if (provenance.get('price_basis') != 'raw_unadjusted' or
+                    provenance.get('user_approved_raw') is not True):
+                    raise ValueError(f'Kaggle raw partition lacks explicit unadjusted approval: {file}')
+                raw_kaggle_stock_years += 1
+            elif not provenance.get('price_adjustment_reviewed_by_user'):
+                raise ValueError(f'Unreviewed adjusted version partition: {file}')
+            checks.append((item.isin,year,provenance['canonical_sha256']))
+    fingerprint=hashlib.sha256(json.dumps({
+        'files':sorted(checks),'review_manifest':manifest_sha,
+        'source':price_source},sort_keys=True).encode()).hexdigest()
+    return fingerprint,raw_kaggle_stock_years
+
+
 def train_and_validate(*, root, snapshot: str, output: str = 'artifacts/yahoo_nifty50_stage1',
                        horizon: int = 5, top_k: int = 5, estimators: int = 100,
                        cost_bps_per_side: float = 25., allow_unverified_adjustments: bool = False,
@@ -132,24 +161,10 @@ def train_and_validate(*, root, snapshot: str, output: str = 'artifacts/yahoo_ni
     constituents = load_universe(root, snapshot, universe_name=universe_name)
     raw = load_daily(root, constituents, TRAIN_BEGIN, VALID_END, provider=price_source)
     dataset_fingerprint = None
+    raw_kaggle_stock_years = 0
     if price_source.startswith('research_v'):
-        # Fingerprint the EXACT files and human-review decisions supplied to the model.
-        checks=[]
-        for item in constituents.itertuples(index=False):
-            for year in range(2000,2020):
-                file=bar_path(root,item.isin,year,price_source)
-                if not file.exists():continue
-                meta=file.with_name(f'{year}.source.json')
-                if not meta.exists():raise ValueError(f'Missing approved version provenance: {file}')
-                provenance=json.loads(meta.read_text())
-                if (provenance.get('source') in ('kaggle_raw','nse_raw') or
-                    not provenance.get('price_adjustment_reviewed_by_user') or
-                    provenance.get('canonical_sha256') != hashlib.sha256(file.read_bytes()).hexdigest()):
-                    raise ValueError(f'Unverified or changed version partition: {file}')
-                checks.append((item.isin,year,provenance['canonical_sha256']))
-        dataset_fingerprint=hashlib.sha256(json.dumps({
-            'files':sorted(checks),'review_manifest':audits[0]['manifest_sha256'],
-            'source':price_source},sort_keys=True).encode()).hexdigest()
+        dataset_fingerprint, raw_kaggle_stock_years = verify_versioned_provenance(
+            root, constituents, price_source, audits[0]['manifest_sha256'])
     frame = _eligible_features(raw, horizon)
     feature_names = __import__('features.technical_indicators', fromlist=['FEATURES']).FEATURES
     train = frame[(frame.date <= pd.Timestamp(TRAIN_END)) &
@@ -189,6 +204,8 @@ def train_and_validate(*, root, snapshot: str, output: str = 'artifacts/yahoo_ni
     summary = {'experiment':f'stage1_fixed_{universe_name}_snapshot_2000_2019','universe_name':universe_name,
                'universe_snapshot':snapshot,'current_constituents_not_historical_membership':True,
                'price_source':price_source,'dataset_fingerprint_sha256':dataset_fingerprint,
+               'raw_kaggle_stock_years':raw_kaggle_stock_years,
+               'raw_kaggle_warning':('Selected Kaggle stock-years are UNADJUSTED. Raw/adjusted transitions can cause artificial returns and distort model performance; research only.' if raw_kaggle_stock_years else ''),
                'training_period':[TRAIN_BEGIN, TRAIN_END], 'held_out_period':[VALID_BEGIN,VALID_END],
                'training_label_end_latest':str(train.label_end_date.max().date()),
                'train_rows':int(len(train)), 'train_sessions':int(train.date.nunique()),
@@ -196,7 +213,7 @@ def train_and_validate(*, root, snapshot: str, output: str = 'artifacts/yahoo_ni
                'holdout_sessions':int(holdout.date.nunique()),'holdout_symbols':int(holdout.symbol.nunique()),
                'horizon_sessions':horizon,'top_k':top_k, 'features':list(feature_names),
                'estimators':estimators,'results':results,'future_test_2020_onwards_untouched':True,
-               'prices_corporate_actions':'Source provider-adjusted OHLCV; independently UNVERIFIED — RESEARCH ONLY',
+               'prices_corporate_actions':('Mix of RAW unadjusted Kaggle and provider-adjusted price history; corporate actions NOT reconciled — RESEARCH ONLY' if raw_kaggle_stock_years else 'Source provider-adjusted OHLCV; independently UNVERIFIED — RESEARCH ONLY'),
                'validated_download_audits':[{'start':a['start'],'end':a['end'],
                     'request_checks':a['requests_or_cache_checks'],'errors':a['errors'],
                     'no_data_unverified':a.get('no_data_unverified',0),
