@@ -13,7 +13,8 @@ import platform
 import numpy as np
 import pandas as pd
 
-from marketdata.shared_store import data_root, load_daily, load_universe
+from marketdata.shared_store import data_root, load_daily, load_universe, bar_path
+from marketdata.historical_validation import price_provider
 
 TRAIN_BEGIN = '2000-01-01'
 TRAIN_END = '2016-12-31'
@@ -90,7 +91,8 @@ def verify_download_audits(root: Path, snapshot: str, universe_name: str = 'nift
     """Fail closed unless every requested stock/year was checked without HTTP errors."""
     count = len(load_universe(root, snapshot, universe_name=universe_name))
     if price_source not in ('yahoo_finance', 'research_ohlcv'):
-        raise ValueError('Unsupported model price source')
+        if not price_source.startswith('research_') or price_provider(price_source[len('research_'):]) != price_source:
+            raise ValueError('Unsupported model price source')
     audits=[]
     for start,end,years in ((TRAIN_BEGIN,TRAIN_END,17),(VALID_BEGIN,VALID_END,3)):
         filename = f'{universe_name}_{snapshot}_{start}_{end}_summary.json'
@@ -105,7 +107,12 @@ def verify_download_audits(root: Path, snapshot: str, universe_name: str = 'nift
             report.get('snapshot') != snapshot or report.get('universe_name') != universe_name or
             report.get('start') != start or report.get('end') != end):
             raise ValueError(f'Incomplete/failed {price_source} download audit: {path}')
+        if price_source.startswith('research_v'):
+            if report.get('pending') != 0 or not report.get('manifest_sha256'):
+                raise ValueError(f'Incomplete approved-data version audit: {path}')
         audits.append(report)
+    if price_source.startswith('research_v') and audits[0]['manifest_sha256'] != audits[1]['manifest_sha256']:
+        raise ValueError('Different review manifest used for train/holdout datasets; freeze one version')
     return audits
 
 
@@ -124,6 +131,25 @@ def train_and_validate(*, root, snapshot: str, output: str = 'artifacts/yahoo_ni
                                    price_source=price_source)
     constituents = load_universe(root, snapshot, universe_name=universe_name)
     raw = load_daily(root, constituents, TRAIN_BEGIN, VALID_END, provider=price_source)
+    dataset_fingerprint = None
+    if price_source.startswith('research_v'):
+        # Fingerprint the EXACT files and human-review decisions supplied to the model.
+        checks=[]
+        for item in constituents.itertuples(index=False):
+            for year in range(2000,2020):
+                file=bar_path(root,item.isin,year,price_source)
+                if not file.exists():continue
+                meta=file.with_name(f'{year}.source.json')
+                if not meta.exists():raise ValueError(f'Missing approved version provenance: {file}')
+                provenance=json.loads(meta.read_text())
+                if (provenance.get('source') in ('kaggle_raw','nse_raw') or
+                    not provenance.get('price_adjustment_reviewed_by_user') or
+                    provenance.get('canonical_sha256') != hashlib.sha256(file.read_bytes()).hexdigest()):
+                    raise ValueError(f'Unverified or changed version partition: {file}')
+                checks.append((item.isin,year,provenance['canonical_sha256']))
+        dataset_fingerprint=hashlib.sha256(json.dumps({
+            'files':sorted(checks),'review_manifest':audits[0]['manifest_sha256'],
+            'source':price_source},sort_keys=True).encode()).hexdigest()
     frame = _eligible_features(raw, horizon)
     feature_names = __import__('features.technical_indicators', fromlist=['FEATURES']).FEATURES
     train = frame[(frame.date <= pd.Timestamp(TRAIN_END)) &
@@ -150,6 +176,8 @@ def train_and_validate(*, root, snapshot: str, output: str = 'artifacts/yahoo_ni
                                          top_k=top_k, horizon=horizon, side_cost_bps=cost_bps_per_side)
         results['lightgbm' if name == 'score' else 'momentum_20_baseline'] = metrics
         trades_all.append(trades)
+    if price_source.startswith('research_v') and (output/'report.json').exists():
+        raise FileExistsError(f'Existing model report cannot be overwritten: {output}; use new --output directory')
     output.mkdir(parents=True, exist_ok=True)
     ranker.booster_.save_model(str(output/'ranker.txt'))
     predictions[['date','symbol','score','rule_score','rank','entry_date',
@@ -160,7 +188,7 @@ def train_and_validate(*, root, snapshot: str, output: str = 'artifacts/yahoo_ni
     coverage.to_csv(output/'stock_coverage.csv', index=False)
     summary = {'experiment':f'stage1_fixed_{universe_name}_snapshot_2000_2019','universe_name':universe_name,
                'universe_snapshot':snapshot,'current_constituents_not_historical_membership':True,
-               'price_source':price_source,
+               'price_source':price_source,'dataset_fingerprint_sha256':dataset_fingerprint,
                'training_period':[TRAIN_BEGIN, TRAIN_END], 'held_out_period':[VALID_BEGIN,VALID_END],
                'training_label_end_latest':str(train.label_end_date.max().date()),
                'train_rows':int(len(train)), 'train_sessions':int(train.date.nunique()),
@@ -193,7 +221,7 @@ def main():
     p.add_argument('--data-root', help='Shared data folder OUTSIDE ai-swing')
     p.add_argument('--snapshot', required=True, help='Current stock-universe snapshot date stored by downloader')
     p.add_argument('--universe-name',default='nifty50',help='Same universe name as downloader')
-    p.add_argument('--price-source',choices=['yahoo_finance','research_ohlcv'],default='yahoo_finance',
+    p.add_argument('--price-source',default='yahoo_finance',
                    help='Research OHLCV is the stable mixed-source view; raw provider caches are never overwritten')
     p.add_argument('--output', default='artifacts/yahoo_nifty50_stage1')
     p.add_argument('--horizon',type=int,default=5);p.add_argument('--top-k',type=int,default=5)

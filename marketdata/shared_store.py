@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 COLUMNS = ('date', 'symbol', 'isin', 'open', 'high', 'low', 'close', 'volume')
-PROVIDERS = {'yahoo_finance', 'nse_raw', 'kaggle_raw', 'research_ohlcv'}
+PROVIDERS = {'yahoo_finance', 'nse_raw', 'research_ohlcv', 'kaggle_raw'}
 
 
 def data_root(value: str | Path | None = None) -> Path:
@@ -36,7 +36,7 @@ def validate_universe_name(name: str) -> str:
 
 
 def bar_path(root: Path, isin: str, year: int, provider: str = 'yahoo_finance') -> Path:
-    approved = provider in PROVIDERS or (isinstance(provider, str) and provider.startswith('ext_')
+    approved = provider in PROVIDERS or (isinstance(provider,str) and bool(re.fullmatch(r'research_v[a-z0-9][a-z0-9_-]{0,30}',provider))) or (isinstance(provider, str) and provider.startswith('ext_')
                 and 5 <= len(provider) <= 48 and provider[4:].replace('_','').replace('-','').isalnum()
                 and provider == provider.lower())
     if not approved or not (len(isin) == 12 and isin.startswith('IN') and isin.isalnum()):

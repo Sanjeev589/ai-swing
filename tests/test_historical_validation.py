@@ -1,0 +1,135 @@
+"""Offline regression tests for the security-history and approved-data quarantine."""
+import json
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from marketdata.historical_validation import audit, build, price_provider
+from marketdata.shared_store import save_year,bar_path
+from models.nifty50_stage1 import verify_download_audits
+
+SNAP='2026-10-18'
+NAME='review_test'
+
+
+def universe(root):
+    folder=root/'universes'/NAME;folder.mkdir(parents=True)
+    frame=pd.DataFrame({
+        'symbol':['TCS','BAJAJ-AUTO','ITC'],
+        'isin':['INE467B01029','INE917I01010','INE154A01025'],
+        'yahoo_ticker':['TCS.NS','BAJAJ-AUTO.NS','ITC.NS']})
+    frame.to_csv(folder/f'{SNAP}.csv',index=False)
+    return frame
+
+
+def prices(symbol,isin,year=2004,days=None):
+    dates=pd.DatetimeIndex(days or [f'{year}-06-01',f'{year}-09-01',f'{year}-09-02'])
+    n=len(dates)
+    return pd.DataFrame({'date':dates,'symbol':symbol,'isin':isin,
+                         'open':np.full(n,100.),'high':np.full(n,102.),
+                         'low':np.full(n,99.),'close':np.full(n,101.),
+                         'volume':np.full(n,10000.)})
+
+
+def setup(tmp_path):
+    root=tmp_path/'data';frame=universe(root)
+    for symbol,isin in zip(frame.symbol,frame['isin']):
+        save_year(root,prices(symbol,isin),isin=isin,year=2004)
+    return root
+
+
+def manifest(root, version='v2'):
+    return root/'reports'/'historical_validation'/f'{NAME}_{SNAP}_{version}_review.csv'
+
+
+def test_listing_gates_and_identity_mismatch_report(tmp_path):
+    root=setup(tmp_path)
+    kaggle=root/'kaggle';kaggle.mkdir()
+    pd.DataFrame({'Symbol':['TCS','BAJAJ-AUTO','ITC'],
+                  'ISIN Code':['INE467B01020','INE917I01010','INE154A01025']}).to_csv(kaggle/'stock_metadata.csv',index=False)
+    r=audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    d=pd.read_csv(r['review_file']).set_index('symbol')
+    assert r['yahoo_prelisting_stock_years']==2
+    assert r['kaggle_isin_mismatches']==1
+    assert d.loc['BAJAJ-AUTO','decision']=='must_exclude'
+    assert d.loc['TCS','decision']=='requires_review'
+    assert d.loc['TCS','yahoo_prelisting_rows']==1
+    assert 'kaggle_isin_mismatch' in d.loc['TCS','finding']
+    assert bar_path(root,'INE467B01029',2004,'yahoo_finance').exists()
+    assert not bar_path(root,'INE467B01029',2004,price_provider('v2')).exists()
+
+
+def test_edit_preservation_and_prelisting_trim(tmp_path):
+    root=setup(tmp_path)
+    audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    p=manifest(root);data=pd.read_csv(p,dtype=str).fillna('')
+    for stock in ['TCS','ITC']:
+        data.loc[data.symbol==stock,'decision']='approved_adjusted'
+        data.loc[data.symbol==stock,'review_note']='Checked source, listing identity and adjustments'
+        data.loc[data.symbol==stock,'evidence_url']='https://nsearchives.nseindia.com/content/press/23082004.pdf'
+    data.loc[data.symbol=='TCS','trim_prelisting']='true'
+    data.to_csv(p,index=False)
+    audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    assert pd.read_csv(p).loc[lambda df:df.symbol.eq('TCS'),'decision'].iloc[0]=='approved_adjusted'
+    published=build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    assert published['selected']==2 and published['excluded']==1
+    dest=bar_path(root,'INE467B01029',2004,'research_v2')
+    saved=pd.read_csv(dest)
+    assert len(saved)==2 and pd.to_datetime(saved.date).min()==pd.Timestamp('2004-09-01')
+    meta=json.loads(dest.with_name('2004.source.json').read_text())
+    assert meta['trimmed_prelisting_rows']==1
+    assert json.loads((root/'reports'/'research_v2'/f'{NAME}_{SNAP}_2004-01-01_2004-12-31_summary.json').read_text())['selected']==2
+    assert build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')['selected']==2
+    edited=pd.read_csv(p,dtype=str).fillna('');edited.loc[edited.symbol=='ITC','review_note']='changed approval';edited.to_csv(p,index=False)
+    with pytest.raises(ValueError,match='another review manifest'):
+        build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+
+
+def test_unreviewed_and_prelisting_guard_fail_closed(tmp_path):
+    root=setup(tmp_path)
+    audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    with pytest.raises(ValueError,match='unreviewed'):
+        build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    p=manifest(root);d=pd.read_csv(p,dtype=str).fillna('')
+    d.loc[d.symbol=='TCS','decision']='approved_adjusted'
+    d.loc[d.symbol=='ITC','decision']='approved_adjusted'
+    d.loc[d.decision=='approved_adjusted','review_note']='reviewed adjustments'
+    d.loc[d.decision=='approved_adjusted','evidence_url']='https://example.org/evidence'
+    d.to_csv(p,index=False)
+    with pytest.raises(ValueError,match='trim_prelisting=true'):
+        build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    assert not bar_path(root,'INE154A01025',2004,'research_v2').exists()
+
+
+def test_raw_kaggle_never_accepted_and_external_provenance(tmp_path):
+    root=setup(tmp_path)
+    audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    p=manifest(root);d=pd.read_csv(p,dtype=str).fillna('')
+    d.loc[d.symbol=='TCS','decision']='must_exclude'
+    d.loc[d.symbol=='ITC','decision']='approved_adjusted'
+    d.loc[d.symbol=='ITC','evidence_url']='https://example.org/reviewed'
+    d.loc[d.symbol=='ITC','review_note']='Adjusted CSV verified'
+    d.loc[d.symbol=='ITC','approved_source']='kaggle_raw'
+    d.to_csv(p,index=False)
+    with pytest.raises(ValueError,match='Unadjusted/unverified source'):
+        build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    d.loc[d.symbol=='ITC','approved_source']='ext_checked'
+    d.to_csv(p,index=False)
+    with pytest.raises(FileNotFoundError,match='missing adjusted source'):
+        build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+
+
+def test_dynamic_model_audits_verified_version_and_mismatch(tmp_path):
+    root=tmp_path/'data';universe(root)
+    folder=root/'reports'/'research_v2';folder.mkdir(parents=True)
+    for start,end,count in [('2000-01-01','2016-12-31',17),('2017-01-01','2019-12-31',3)]:
+        (folder/f'{NAME}_{SNAP}_{start}_{end}_summary.json').write_text(json.dumps({
+            'provider':'research_v2','universe_name':NAME,'snapshot':SNAP,
+            'start':start,'end':end,'universe_size':3,'requests_or_cache_checks':3*count,
+            'errors':0,'pending':0,'manifest_sha256':'abc'}))
+    assert len(verify_download_audits(root,SNAP,NAME,'research_v2'))==2
+    f=folder/f'{NAME}_{SNAP}_2017-01-01_2019-12-31_summary.json'
+    wrong=json.loads(f.read_text());wrong['manifest_sha256']='other';f.write_text(json.dumps(wrong))
+    with pytest.raises(ValueError,match='Different review manifest'):
+        verify_download_audits(root,SNAP,NAME,'research_v2')
