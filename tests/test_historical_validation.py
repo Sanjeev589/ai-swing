@@ -79,6 +79,8 @@ def test_edit_preservation_and_prelisting_trim(tmp_path):
     assert len(saved)==2 and pd.to_datetime(saved.date).min()==pd.Timestamp('2004-09-01')
     meta=json.loads(dest.with_name('2004.source.json').read_text())
     assert meta['trimmed_prelisting_rows']==1
+    assert meta['automatically_trimmed_prelisting'] is True
+    assert published['automatically_trimmed_prelisting_rows']==1
     assert json.loads((root/'reports'/'research_v2'/f'{NAME}_{SNAP}_2004-01-01_2004-12-31_summary.json').read_text())['selected']==2
     assert build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')['selected']==2
     edited=pd.read_csv(p,dtype=str).fillna('');edited.loc[edited.symbol=='ITC','review_note']='changed approval';edited.to_csv(p,index=False)
@@ -86,7 +88,7 @@ def test_edit_preservation_and_prelisting_trim(tmp_path):
         build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
 
 
-def test_unreviewed_and_prelisting_guard_fail_closed(tmp_path):
+def test_unreviewed_still_fails_closed(tmp_path):
     root=setup(tmp_path)
     audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
     with pytest.raises(ValueError,match='unreviewed'):
@@ -97,9 +99,11 @@ def test_unreviewed_and_prelisting_guard_fail_closed(tmp_path):
     d.loc[d.decision=='approved_adjusted','review_note']='reviewed adjustments'
     d.loc[d.decision=='approved_adjusted','evidence_url']='https://example.org/evidence'
     d.to_csv(p,index=False)
-    with pytest.raises(ValueError,match='trim_prelisting=true'):
-        build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
-    assert not bar_path(root,'INE154A01025',2004,'research_v2').exists()
+    result=build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    assert result['automatically_trimmed_prelisting_stock_years']==1
+    assert result['automatically_trimmed_prelisting_rows']==1
+    assert result['selected']==2
+    assert bar_path(root,'INE154A01025',2004,'research_v2').exists()
 
 
 def test_raw_kaggle_never_accepted_and_external_provenance(tmp_path):
@@ -319,13 +323,76 @@ def test_listing_year_with_only_prelisting_prices_is_auto_excluded(tmp_path):
     assert not bar_path(root,'INE467B01029',2004,'research_v2').exists()
 
 
-def test_partial_listing_year_requires_explicit_trim_approval(tmp_path):
+def test_partial_listing_year_is_trimmed_automatically_without_flag(tmp_path):
     root=setup(tmp_path)
     audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
     p=manifest(root);d=pd.read_csv(p,dtype=str,keep_default_na=False)
     d.loc[d.symbol=='TCS','decision']='approved_adjusted'
     d.loc[d.symbol=='ITC','decision']='approved_adjusted'
     d.to_csv(p,index=False)
-    with pytest.raises(ValueError,match='trim_prelisting=true'):
-        build(root=root,snapshot=SNAP,universe_name=NAME,
-              start='2004-01-01',end='2004-12-31')
+    original=p.read_bytes()
+    source=bar_path(root,'INE467B01029',2004,'yahoo_finance')
+    source_digest=source.read_bytes()
+    result=build(root=root,snapshot=SNAP,universe_name=NAME,
+                 start='2004-01-01',end='2004-12-31')
+    assert result['selected']==2
+    assert result['automatically_trimmed_prelisting_stock_years']==1
+    assert result['automatically_trimmed_prelisting_rows']==1
+    assert result['automatically_trimmed_prelisting_examples']==[
+        {'symbol':'TCS','year':2004,'removed_rows':1,'listing_date':'2004-08-25'}]
+    target=bar_path(root,'INE467B01029',2004,'research_v2')
+    valid=pd.read_csv(target)
+    assert len(valid)==2
+    assert pd.to_datetime(valid.date).min()>=pd.Timestamp('2004-08-25')
+    meta=json.loads(target.with_name('2004.source.json').read_text())
+    assert meta['automatically_trimmed_prelisting'] is True
+    assert meta['trimmed_prelisting_rows']==1
+    assert meta['listing_date']=='2004-08-25'
+    assert p.read_bytes()==original
+    assert source.read_bytes()==source_digest
+
+
+def test_kaggle_listing_year_automatically_trims_but_preserves_raw(tmp_path):
+    root=setup(tmp_path)
+    kaggle=root/'kaggle';kaggle.mkdir()
+    pd.DataFrame({'Symbol':['TCS'], 'ISIN Code':['INE467B01029']}).to_csv(kaggle/'stock_metadata.csv',index=False)
+    original=prices('TCS','INE467B01029',2004)
+    save_year(root,original,isin='INE467B01029',year=2004,provider='kaggle_raw')
+    raw=bar_path(root,'INE467B01029',2004,'kaggle_raw')
+    before=raw.read_bytes()
+    audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    p=manifest(root);frame=pd.read_csv(p,dtype=str,keep_default_na=False)
+    frame.loc[frame.symbol=='TCS','decision']='approved_adjusted'
+    frame.loc[frame.symbol=='TCS','approved_source']='kaggle_raw'
+    frame.loc[frame.symbol=='ITC','decision']='approved_adjusted'
+    frame.to_csv(p,index=False)
+    result=build(root=root,snapshot=SNAP,universe_name=NAME,
+                 start='2004-01-01',end='2004-12-31')
+    assert result['raw_kaggle_stock_years']==1
+    assert result['automatically_trimmed_prelisting_rows']==1
+    target=bar_path(root,'INE467B01029',2004,'research_v2')
+    out=pd.read_csv(target)
+    assert len(out)==2
+    assert pd.to_datetime(out.date).min()>=pd.Timestamp('2004-08-25')
+    assert raw.read_bytes()==before
+    metadata=json.loads(target.with_name('2004.source.json').read_text())
+    assert metadata['source']=='kaggle_raw'
+    assert metadata['automatically_trimmed_prelisting'] is True
+
+
+def test_listing_year_all_prelisting_still_excluded_without_trim_flag(tmp_path):
+    root=setup(tmp_path)
+    p=bar_path(root,'INE467B01029',2004,'yahoo_finance')
+    p.unlink()
+    save_year(root,prices('TCS','INE467B01029',2004,days=['2004-06-01']),
+              isin='INE467B01029',year=2004,provider='yahoo_finance')
+    audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    review=manifest(root);frame=pd.read_csv(review,dtype=str,keep_default_na=False)
+    frame.loc[frame.symbol=='TCS','decision']='approved_adjusted'
+    frame.loc[frame.symbol=='ITC','decision']='approved_adjusted'
+    frame.to_csv(review,index=False)
+    result=build(root=root,snapshot=SNAP,universe_name=NAME,
+                 start='2004-01-01',end='2004-12-31')
+    assert result['automatically_excluded_prelisting_examples']==['TCS/2004']
+    assert result['automatically_trimmed_prelisting_rows']==0
+    assert not bar_path(root,'INE467B01029',2004,'research_v2').exists()

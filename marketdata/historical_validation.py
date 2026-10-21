@@ -267,7 +267,7 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
         raise ValueError('Review contains an unknown/changed security')
     rules,_=_listing_rules(root)
     kaggle_isins=_kaggle_isins(root)
-    to_publish=[];skipped=[];pending=[];undocumented=[];raw_kaggle=[];auto_excluded_prelisting=[]
+    to_publish=[];skipped=[];pending=[];undocumented=[];raw_kaggle=[];auto_excluded_prelisting=[];auto_trimmed_prelisting=[]
     for r in portion.itertuples(index=False):
         key=f'{r.symbol}/{r.year}'
         if r.decision not in DECISIONS: raise ValueError(f'Invalid decision {r.decision} for {key}')
@@ -310,9 +310,14 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
                 auto_excluded_prelisting.append(key)
                 continue
             if trimmed:
-                if not _truth(r.trim_prelisting):
-                    raise ValueError(f'{key} has {trimmed} rows before verified listing; mark trim_prelisting=true after review')
-                data=data[data.date>=listed].copy()
+                # The listing rule is verified by the configured NSE evidence.
+                # Enforce it consistently regardless of an old/manual trim flag:
+                # retain only legitimate post-listing rows in the new research
+                # copy; do not rewrite the original Yahoo/Kaggle source file.
+                data=data.loc[data.date>=listed].copy()
+                auto_trimmed_prelisting.append({
+                    'symbol':r.symbol, 'year':int(r.year),
+                    'removed_rows':trimmed, 'listing_date':str(listed.date())})
         # Only count documentation and raw Kaggle years actually published.
         if not (r.evidence_url.strip() and r.review_note.strip()):
             undocumented.append(key)
@@ -349,8 +354,10 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
         newmeta={'version':version,'source':r.approved_source,
                  'source_sha256':_digest(source),'canonical_sha256':_digest(target),
                  'symbol':r.symbol,'isin':r.isin,'year':int(r.year),
-                 'listing_date':r.verified_listing_date,
-                 'trimmed_prelisting_rows':trimmed,'evidence_url':r.evidence_url,
+                 'listing_date':str(rules[r.symbol][0].date()) if r.symbol in rules else r.verified_listing_date,
+                 'trimmed_prelisting_rows':trimmed,
+                 'automatically_trimmed_prelisting':bool(trimmed),
+                 'evidence_url':r.evidence_url,
                  'review_note':r.review_note,
                  'approval_documented':bool(r.evidence_url.strip() and r.review_note.strip()),
                  'price_basis':('raw_unadjusted' if r.approved_source=='kaggle_raw' else 'provider_adjusted_unverified'),
@@ -367,9 +374,13 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
              'excluded':len(skipped),'pending':0,'errors':0,
              'automatically_excluded_prelisting_stock_years':len(auto_excluded_prelisting),
              'automatically_excluded_prelisting_examples':auto_excluded_prelisting[:20],
+             'automatically_trimmed_prelisting_stock_years':len(auto_trimmed_prelisting),
+             'automatically_trimmed_prelisting_rows':sum(item['removed_rows'] for item in auto_trimmed_prelisting),
+             'automatically_trimmed_prelisting_examples':auto_trimmed_prelisting[:20],
              'approvals_missing_evidence_or_note':len(undocumented),
              'raw_kaggle_stock_years':len(raw_kaggle),
              'warning':(' '.join(w for w in [
+                 ('Some approved stock-years were automatically trimmed to verified NSE listing dates; original vendor files remain unchanged.' if auto_trimmed_prelisting else ''),
                  ('Some approved stock-years lack evidence_url or review_note; approvals are manual and their price adjustments are not independently verified.' if undocumented else ''),
                  ('WARNING: raw Kaggle stock-years are explicitly selected but NOT split/dividend adjusted. Mixing raw Kaggle with Yahoo-adjusted prices can corrupt returns and technical indicators; research only.' if raw_kaggle else ''),
              ] if w)),
