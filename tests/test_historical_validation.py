@@ -133,3 +133,43 @@ def test_dynamic_model_audits_verified_version_and_mismatch(tmp_path):
     wrong=json.loads(f.read_text());wrong['manifest_sha256']='other';f.write_text(json.dumps(wrong))
     with pytest.raises(ValueError,match='Different review manifest'):
         verify_download_audits(root,SNAP,NAME,'research_v2')
+
+
+@pytest.mark.parametrize('evidence,note', [('', ''), ('https://example.org/evidence', ''), ('', 'Reviewed manually')])
+def test_approval_without_evidence_or_note_is_allowed_but_flagged(tmp_path, evidence, note):
+    root=setup(tmp_path)
+    audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    p=manifest(root);d=pd.read_csv(p,dtype=str,keep_default_na=False)
+    d.loc[d.symbol=='TCS','decision']='must_exclude'
+    d.loc[d.symbol=='ITC','decision']='approved_adjusted'
+    d.loc[d.symbol=='ITC','evidence_url']=evidence
+    d.loc[d.symbol=='ITC','review_note']=note
+    d.to_csv(p,index=False)
+    result=build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    assert result['selected']==1
+    assert result['excluded']==2
+    assert result['approvals_missing_evidence_or_note']==1
+    assert 'not independently verified' in result['warning']
+    target=bar_path(root,'INE154A01025',2004,'research_v2')
+    assert target.is_file()
+    metadata=json.loads(target.with_name('2004.source.json').read_text())
+    assert metadata['approval_documented'] is False
+    assert metadata['evidence_url']==evidence
+    assert metadata['review_note']==note
+
+
+def test_complete_approval_has_no_documentation_warning(tmp_path):
+    root=setup(tmp_path)
+    audit(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    p=manifest(root);d=pd.read_csv(p,dtype=str,keep_default_na=False)
+    d.loc[d.symbol!='ITC','decision']='must_exclude'
+    d.loc[d.symbol=='ITC','decision']='approved_adjusted'
+    d.loc[d.symbol=='ITC','evidence_url']='https://example.org/evidence'
+    d.loc[d.symbol=='ITC','review_note']='Reviewed'
+    d.to_csv(p,index=False)
+    result=build(root=root,snapshot=SNAP,universe_name=NAME,start='2004-01-01',end='2004-12-31')
+    assert result['approvals_missing_evidence_or_note']==0
+    assert result['warning']==''
+    target=bar_path(root,'INE154A01025',2004,'research_v2')
+    metadata=json.loads(target.with_name('2004.source.json').read_text())
+    assert metadata['approval_documented'] is True

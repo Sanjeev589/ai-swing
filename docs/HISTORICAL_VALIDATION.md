@@ -52,15 +52,18 @@ Every stock/calendar-year row has `decision`:
 | --- | --- |
 | `requires_review` | Default: this year CANNOT enter the reviewed model data. |
 | `must_exclude` | Exclude the year, e.g. confirmed pre-listing/no trustworthy adjusted data. |
-| `approved_adjusted` | Include only after checking security identity, adjusted source, and documentary evidence. |
+| `approved_adjusted` | Manually approve adjusted data after checking security identity and corporate actions. Evidence fields are recommended, not mandatory. |
 
 For `approved_adjusted` fill in:
 
 - `approved_source`: `yahoo_finance` or an existing verified import `ext_<vendor>`;
   **never** `kaggle_raw` or `nse_raw`.
-- `evidence_url`: supporting information (exchange, corporate action, vendor methodology).
-- `review_note`: your reason and adjustment verification. The program cannot
-  independently certify price adjustments merely from these fields.
+- `evidence_url` **(optional)**: supporting information (exchange, corporate action, vendor methodology).
+- `review_note` **(optional)**: your reason and adjustment verification. The program cannot
+  independently certify price adjustments merely from these fields. Both may be left
+  blank to allow publishing, but the resulting summary reports the number of
+  undocumented approvals and each partition records `approval_documented=false`.
+  Blank fields **do not** establish that price adjustments were verified.
 - `trim_prelisting`: `true` only if you verified that a stock-year contains some
   legitimate *post-listing* observations and want to drop prior rows.
 
