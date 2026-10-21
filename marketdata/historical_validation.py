@@ -267,15 +267,20 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
         raise ValueError('Review contains an unknown/changed security')
     rules,_=_listing_rules(root)
     kaggle_isins=_kaggle_isins(root)
-    to_publish=[];skipped=[];pending=[];undocumented=[];raw_kaggle=[]
+    to_publish=[];skipped=[];pending=[];undocumented=[];raw_kaggle=[];auto_excluded_prelisting=[]
     for r in portion.itertuples(index=False):
         key=f'{r.symbol}/{r.year}'
         if r.decision not in DECISIONS: raise ValueError(f'Invalid decision {r.decision} for {key}')
-        if r.decision=='requires_review': pending.append(key);continue
         if r.decision=='must_exclude': skipped.append(key);continue
-        # Review annotations are optional; record their absence rather than failing.
-        if not (r.evidence_url.strip() and r.review_note.strip()):
-            undocumented.append(key)
+        listed,rule_url=rules.get(r.symbol,(pd.NaT,''))
+        # A previous manual approval must never override a verified listing rule.
+        # Exclude the *whole year* before reading the selected vendor or checking
+        # the review decision: this handles old approved/prelisting CSV rows.
+        if pd.notna(listed) and pd.Timestamp(year=int(r.year),month=12,day=31)<listed:
+            skipped.append(key)
+            auto_excluded_prelisting.append(key)
+            continue
+        if r.decision=='requires_review': pending.append(key);continue
         if r.approved_source in ('nse_raw','research_ohlcv'):
             raise ValueError(f'Unreviewed source forbidden for {key}')
         if r.approved_source not in ('yahoo_finance','kaggle_raw') and not re.fullmatch(r'ext_[a-z0-9_-]+',r.approved_source):
@@ -285,7 +290,6 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
             # ISIN, but confirm the metadata still identifies the same security.
             if kaggle_isins.get(r.symbol) != r.isin:
                 raise ValueError(f'Kaggle ISIN/metadata mismatch for {key}; resolve security identity before selecting kaggle_raw')
-            raw_kaggle.append(key)
         source=bar_path(root,r.isin,int(r.year),r.approved_source)
         if not source.is_file():raise FileNotFoundError(f'Approved {key}: missing selected source {source}; run Kaggle audit with caching or change approved_source')
         data=_load_prices(source,r.symbol,r.isin,int(r.year))
@@ -295,15 +299,25 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
             extmeta=source.with_name(f'{r.year}.source.json')
             if not extmeta.is_file() or json.loads(extmeta.read_text()).get('cache_sha256')!=_digest(source):
                 raise ValueError(f'Approved external source needs verified import metadata: {key}')
-        listed,rule_url=rules.get(r.symbol,(pd.NaT,''))
         trimmed=0
         if pd.notna(listed):
             trimmed=int((data.date<listed).sum())
+            # Listing-year records may contain only dates before the verified
+            # listing. Automatically exclude them, even when trim_prelisting
+            # was marked true. No zero-row research partitions are published.
+            if trimmed==len(data):
+                skipped.append(key)
+                auto_excluded_prelisting.append(key)
+                continue
             if trimmed:
                 if not _truth(r.trim_prelisting):
                     raise ValueError(f'{key} has {trimmed} rows before verified listing; mark trim_prelisting=true after review')
                 data=data[data.date>=listed].copy()
-                if data.empty:raise ValueError(f'{key}: all data prelisting; mark must_exclude instead')
+        # Only count documentation and raw Kaggle years actually published.
+        if not (r.evidence_url.strip() and r.review_note.strip()):
+            undocumented.append(key)
+        if r.approved_source=='kaggle_raw':
+            raw_kaggle.append(key)
         to_publish.append((r,source,data,trimmed))
     if pending:
         raise ValueError(f'Cannot build: {len(pending)} unreviewed stock-years (e.g. {pending[:8]}); classify approved_adjusted or must_exclude in {manifest}')
@@ -351,6 +365,8 @@ def build(*,root=None,snapshot,version='v2',universe_name='nifty50',
              'start':first.strftime('%Y-%m-%d'),'end':last.strftime('%Y-%m-%d'),
              'requests_or_cache_checks':expected,'selected':selected,
              'excluded':len(skipped),'pending':0,'errors':0,
+             'automatically_excluded_prelisting_stock_years':len(auto_excluded_prelisting),
+             'automatically_excluded_prelisting_examples':auto_excluded_prelisting[:20],
              'approvals_missing_evidence_or_note':len(undocumented),
              'raw_kaggle_stock_years':len(raw_kaggle),
              'warning':(' '.join(w for w in [
