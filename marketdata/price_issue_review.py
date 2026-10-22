@@ -32,7 +32,7 @@ ISSUE_COLUMNS = [
 ]
 OBSERVED_FIELDS = ('open', 'high', 'low', 'close', 'volume')
 PERMITTED_RESULTS = {'pending', 'verified_issue', 'false_positive', 'unresolved'}
-PERMITTED_ACTIONS = {'none', 'keep_original', 'replace_bar', 'exclude_stock_year'}
+PERMITTED_ACTIONS = {'none', 'keep_original', 'replace_bar', 'exclude_stock_year', 'delete_bar'}
 
 
 def _hash(path: Path) -> str:
@@ -150,7 +150,7 @@ def _review_corrections(root: Path, parent: str, universe: pd.DataFrame, review:
     if data.issue_id.duplicated().any() or data.duplicated(['isin','date']).any():
         raise ValueError('Duplicate issue_id or stock/date in review CSV')
     lookup = {(r.symbol,r.isin) for r in universe.itertuples(index=False)}
-    changes, exclusions = {}, set()
+    changes, exclusions, deletions = {}, set(), {}
     partition_cache = {}
     reviewed = 0
     for r in data.itertuples(index=False):
@@ -192,6 +192,11 @@ def _review_corrections(root: Path, parent: str, universe: pd.DataFrame, review:
         if r.correction_action == 'exclude_stock_year':
             exclusions.add(stock_year)
             continue
+        if r.correction_action == 'delete_bar':
+            deletions[(r.isin,r.date)] = {
+                'issue_id':r.issue_id,'verification_notes':r.verification_notes,
+                'reference_url':r.reference_url,'reviewed_by':r.reviewed_by}
+            continue
         values = {field:float(getattr(r,'corrected_'+field)) for field in OBSERVED_FIELDS}
         if any(not np.isfinite(v) for v in values.values()):
             raise ValueError(f'Non-finite correction in {r.issue_id}')
@@ -200,9 +205,11 @@ def _review_corrections(root: Path, parent: str, universe: pd.DataFrame, review:
         changes[(r.isin,r.date)] = (values,{'issue_id':r.issue_id,
             'verification_notes':r.verification_notes,'reference_url':r.reference_url,
             'reviewed_by':r.reviewed_by})
-    if any((isin,int(date[:4])) in exclusions for isin,date in changes):
-        raise ValueError('Cannot replace a bar while excluding its entire stock-year')
-    return changes, exclusions, reviewed, len(data)
+    if any((isin,int(date[:4])) in exclusions for isin,date in list(changes)+list(deletions)):
+        raise ValueError('Cannot edit/delete a bar while excluding its entire stock-year')
+    if set(changes).intersection(deletions):
+        raise ValueError('Cannot replace and delete the same stock/date')
+    return changes, exclusions, deletions, reviewed, len(data)
 
 
 def apply(*, root=None, parent='research_v3', version='research_v4', snapshot='2026-10-18',
@@ -215,9 +222,9 @@ def apply(*, root=None, parent='research_v3', version='research_v4', snapshot='2
     review_file = Path(review_file)
     if not review_file.is_file():
         raise FileNotFoundError(review_file)
-    changes, excluded, reviewed, n_issues = _review_corrections(root,parent,universe,review_file)
-    if not changes and not excluded:
-        raise ValueError('No verified corrections to apply: review entries must select replace_bar or exclude_stock_year')
+    changes, excluded, deletions, reviewed, n_issues = _review_corrections(root,parent,universe,review_file)
+    if not changes and not excluded and not deletions:
+        raise ValueError('No verified corrections to apply: choose replace_bar, delete_bar or exclude_stock_year')
     target_dir = root/'candles'/version
     reports_dir = root/'reports'/version
     if target_dir.exists() or reports_dir.exists():
@@ -232,7 +239,9 @@ def apply(*, root=None, parent='research_v3', version='research_v4', snapshot='2
             if (member.isin,year) in excluded:
                 continue
             corrections = [(day, values, provenance) for (isin,day),(values,provenance) in changes.items() if isin==member.isin and int(day[:4])==year]
-            if corrections:
+            removed=[(day,info) for (isin,day),info in deletions.items()
+                     if isin==member.isin and int(day[:4])==year]
+            if corrections or removed:
                 candles=candles.copy()
                 for day,values,info in corrections:
                     sel=candles.date.eq(pd.Timestamp(day))
@@ -240,17 +249,27 @@ def apply(*, root=None, parent='research_v3', version='research_v4', snapshot='2
                         raise ValueError(f'Correction target date missing: {member.symbol}/{day}')
                     for f,val in values.items():
                         candles.loc[sel,f]=val
+                for day,info in removed:
+                    sel=candles.date.eq(pd.Timestamp(day))
+                    if sel.sum()!=1:
+                        raise ValueError(f'Deletion target date missing: {member.symbol}/{day}')
+                    candles=candles.loc[~sel].copy()
+                if candles.empty:
+                    raise ValueError(f'Cannot delete every bar of {member.symbol}/{year}; use exclude_stock_year')
                 candles=validate_bars(candles,symbol=member.symbol)
-            partition_records.append((member,year,old_path,old_meta,candles,corrections))
+            partition_records.append((member,year,old_path,old_meta,candles,corrections,removed))
     all_changed_dates={(isin,day) for isin,day in changes}
-    found_changes={(item.isin,day) for item,year,old,meta,candles,corrections in partition_records for day,_,_ in corrections}
+    found_changes={(item.isin,day) for item,year,old,meta,candles,corrections,removed in partition_records for day,_,_ in corrections}
     if all_changed_dates != found_changes:
         raise ValueError('Some correction rows point to excluded or missing partitions')
+    found_deletions={(item.isin,day) for item,year,old,meta,candles,corrections,removed in partition_records for day,_ in removed}
+    if set(deletions) != found_deletions:
+        raise ValueError('Some deletion rows point to excluded or missing partitions')
     review_sha=_hash(review_file)
     status = {'parent':parent,'provider':version,'snapshot':snapshot,'universe_name':universe_name,
               'review_file':str(review_file),'review_sha256':review_sha,
               'issue_rows':n_issues,'reviewed_rows':reviewed,
-              'replaced_bars':len(changes),'excluded_stock_years':len(excluded),
+              'replaced_bars':len(changes),'deleted_bars':len(deletions),'excluded_stock_years':len(excluded),
               'selected_stock_years':len(partition_records),'dry_run':bool(dry_run),
               'source_data_modified':False,'live_execution_enabled':False}
     if dry_run:
@@ -273,10 +292,10 @@ def apply(*, root=None, parent='research_v3', version='research_v4', snapshot='2
     candle_root=root/'candles'; candle_root.mkdir(parents=True,exist_ok=True)
     stage=Path(tempfile.mkdtemp(prefix=f'.{version}-staging-',dir=candle_root))
     try:
-        for member,year,old,metadata,candles,corrections in partition_records:
+        for member,year,old,metadata,candles,corrections,removed in partition_records:
             dest=stage/'NSE_EQ'/'1d'/member.isin/f'{year}.csv.gz'
             dest.parent.mkdir(parents=True,exist_ok=True)
-            if corrections:
+            if corrections or removed:
                 # Same canonical GZIP writer as shared_store.save_year; stage is not a provider.
                 import gzip
                 with dest.open('wb') as handle:
@@ -290,6 +309,7 @@ def apply(*, root=None, parent='research_v3', version='research_v4', snapshot='2
                 'parent_canonical_sha256':_hash(old),
                 'price_issue_review_sha256':review_sha,
                 'verified_bar_corrections':[dict(day=day,**info) for day,values,info in corrections],
+                'verified_bar_deletions':[dict(day=day,**info) for day,info in removed],
                 'live_trading_enabled':False})
             dest.with_name(f'{year}.source.json').write_text(json.dumps(latest,indent=2)+'\n',encoding='utf-8')
         stage.rename(target_dir)
@@ -307,7 +327,8 @@ def apply(*, root=None, parent='research_v3', version='research_v4', snapshot='2
             'errors':0,'pending':0,
             'selected':sum(first <= f'{year}-01-01' <= last for _,year,*_ in partition_records),
             'excluded':sum(first <= f'{year}-01-01' <= last for item,year in excluded),
-            'verified_price_repairs':sum(first <= day <= last for (isin,day) in changes)})
+            'verified_price_repairs':sum(first <= day <= last for (isin,day) in list(changes)+list(deletions)),
+            'verified_deleted_bars':sum(first <= day <= last for (isin,day) in deletions)})
         (reports_dir/name).write_text(json.dumps(audit,indent=2)+'\n',encoding='utf-8')
     (reports_dir/'price_issue_review_result.json').write_text(json.dumps(status,indent=2)+'\n',encoding='utf-8')
     return status
