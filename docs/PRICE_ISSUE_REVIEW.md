@@ -34,11 +34,18 @@ columns and may add only reviewer findings in the existing editable columns.
 | `verification_notes` | Rationale and quality of independent cross-check |
 | `reference_url` | Exact evidence URL; mandatory for actual corrections |
 | `reviewed_by` | Optional reviewer identifier |
-| `correction_action` | `none`, `keep_original`, `replace_bar`, `exclude_stock_year` |
+| `correction_action` | `none`, `keep_original`, `replace_bar`, `delete_bar`, `exclude_stock_year` |
 | `corrected_open/high/low/close/volume` | Supply ALL FIVE numeric values only for `replace_bar` |
 
 Only `verified_issue` with a reference URL and review notes can result in `replace_bar`
-or `exclude_stock_year`. `keep_original` requires `false_positive`.
+or `exclude_stock_year` or `delete_bar`. `keep_original` requires `false_positive`.
+
+For independently confirmed **market-closed days** (e.g., NSE/BSE on 2005-07-28
+following severe flooding), `delete_bar` removes only the non-trading session
+from the NEW research version and records the date, URL, and review note in
+`verified_bar_deletions`. It never invents replacement prices. A valid
+split/bonus ex-date is a trading session: never use `delete_bar` for one.
+
 
 **CAUTION:** A stock split/bonus or Yahoo–Kaggle basis mismatch can affect many
 dates and entire historical regimes. Never guess a one-day price to remove an
